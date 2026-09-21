@@ -25,7 +25,7 @@ export class TradeJournal{
  get(id){return this.db.prepare('SELECT * FROM live_orders WHERE id=?').get(id);}
  active(){return this.db.prepare(`SELECT * FROM live_orders WHERE status IN ${activeSql} LIMIT 1`).get();}
  paused(){return !!this.db.prepare('SELECT paused FROM live_control WHERE id=1').get().paused;}
- pause(value){if(this.paused()!==value)this.log('info','trading',value?'Automation paused.':'Automation resumed.');this.db.prepare('UPDATE live_control SET paused=? WHERE id=1').run(value?1:0);}
+ pause(value,reason=''){if(this.paused()!==value)this.log(value&&reason?'warn':'info','trading',value?'Automation paused.'+(reason?' '+reason:''):'Automation resumed.');this.db.prepare('UPDATE live_control SET paused=? WHERE id=1').run(value?1:0);}
  list(){return this.db.prepare('SELECT id,kind,market,status,created,updated,signature,message FROM live_orders ORDER BY created DESC LIMIT 100').all();}
  reserve(id,action){
   if(!/^[a-zA-Z0-9_-]{8,120}$/.test(id))fail('A valid command key is required.');
@@ -158,7 +158,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
      const receipt=await connection.getTransaction(row.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});
      if(!receipt)return;
      if(tokenDelta(receipt,expected.source,USDC.toBase58(),expected.owner)!==-BigInt(expected.amount)||tokenDelta(receipt,expected.destination,expected.mint,expected.owner)<BigInt(expected.minimum)){
-      journal.pause(true);journal.update(row.id,'unknown','Buyback finalized but received tokens could not be verified. Inspect the original signature.');return;
+      journal.pause(true,'Buyback finalized but received tokens could not be verified. Inspect the original signature.');journal.update(row.id,'unknown','Buyback finalized but received tokens could not be verified. Inspect the original signature.');return;
      }
      journal.update(row.id,'filled','Realized profit bought back into the configured token; receipt finalized.');return;
     }
@@ -175,13 +175,13 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
      const protections=requests.filter((r,i)=>r&&expected.requests[i].trigger).map(r=>decodeRequest(r.data));
      const protectedPosition=protections.some(r=>r.type===1&&r.above===true&&r.trigger===BigInt(expected.tp)&&(r.entire||expected.instant&&r.size>=size)&&!r.executed)&&protections.some(r=>r.type===1&&r.above===false&&r.trigger===BigInt(expected.sl)&&(r.entire||expected.instant&&r.size>=size)&&!r.executed);
      if(protectedPosition){journal.update(row.id,'filled','Long is open; on-chain TP and SL verified.');return;}
-     journal.pause(true);journal.update(row.id,'unknown','Position exists but TP/SL could not be verified. New orders paused; inspect this position in Jupiter.');return;
+     journal.pause(true,'Position exists but TP/SL could not be verified. New orders paused; inspect this position in Jupiter.');journal.update(row.id,'unknown','Position exists but TP/SL could not be verified. New orders paused; inspect this position in Jupiter.');return;
     }
     journal.update(row.id,'confirmed','Transaction finalized; awaiting Jupiter keeper execution.');return;
    }
    if(result){journal.update(row.id,'submitted','Transaction seen on-chain; awaiting finality.');return;}
    const height=await connection.getBlockHeight('finalized');
-   if(height>row.last_height){journal.pause(true);journal.update(row.id,'unknown','Signature not found after expiry. New orders paused; reconcile with an archival RPC before retrying.');return;}
+   if(height>row.last_height){journal.pause(true,'Signature not found after expiry. New orders paused; reconcile with an archival RPC before retrying.');journal.update(row.id,'unknown','Signature not found after expiry. New orders paused; reconcile with an archival RPC before retrying.');return;}
    // Pausing stops fresh broadcasts, but still tracks already-submitted transactions.
    if(closed||journal.paused()||reasons(c).length||expected.owner!==c.vault)return;
    try{const signature=await submitPersisted(connection,row,expected);if(signature!==row.signature)fail('RPC returned an unexpected signature.');journal.update(row.id,'submitted','Submitted; awaiting on-chain confirmation and keeper execution.');}catch{journal.update(row.id,'signed','Submission uncertain. Tracking the original signature; retries reuse identical signed bytes.');}
@@ -194,7 +194,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   const c=await config();if(env.PERPS_TEST_MODE==='true'&&['claim','buyback'].includes(action.kind))fail('Claims and buybacks are disabled in position test mode.');
   if(env.PERPS_TEST_MODE==='true'&&action.kind==='open')action={...action,inputToken:env.PERPS_TEST_FUNDING==='SOL'?'SOL':'USDC',budget:env.PERPS_TEST_FUNDING==='SOL'?undefined:10000000,testCollateralUsd:10};
   if(action.kind==='pause'){journal.pause(true);return status();}
-  if(action.kind==='resume'){const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({...cycle(),phase:cycle().resumePhase||'watching',message:undefined,nextAt:0});journal.pause(false);return status();}
+  if(action.kind==='resume'){if(journal.active()?.status==='unknown'){await reconcile();const unresolved=journal.active();if(unresolved?.status==='unknown')fail('Cannot resume while a transaction is unresolved. '+unresolved.message+' Order: '+unresolved.id);}const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({...cycle(),phase:cycle().resumePhase||'watching',message:undefined,nextAt:0});journal.pause(false);return status();}
   if(!['open','close','claim',...(internal?['buyback']:[])].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');
   const missing=reasons(c);if(missing.length)fail(missing.join(' '));
   if(action.kind!=='close'&&journal.paused())fail('Live orders are paused. Enable them in Admin first.');
