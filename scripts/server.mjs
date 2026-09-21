@@ -33,6 +33,10 @@ export async function createApp(options={}){
  const {sqlite,db}=openStore(resolve(env.DATA_DIR||'.sites-runtime/data','vault.sqlite'));
  const secrets=walletSecrets(sqlite,env);let walletStorageError='';
  try{const stored=secrets.read();if(stored)env.DEV_WALLET_PRIVATE_KEY=stored;}catch{env.DEV_WALLET_PRIVATE_KEY='';walletStorageError='Stored wallet could not be unlocked. Restore the wallet encryption key or save the wallet again.';}
+ let settingsStorageError='';
+ const applySettings=settings=>{env.SOLANA_RPC_URL=settings.rpcUrl;env.JUPITER_API_KEY=settings.jupiterKey;env.LIVE_TRADING_ENABLED=settings.liveTrading?'true':'false';};
+ try{const stored=secrets.readSettings();if(stored)applySettings(stored);}catch{env.LIVE_TRADING_ENABLED='false';env.SOLANA_RPC_URL='';env.JUPITER_API_KEY='';settingsStorageError='Stored connections could not be unlocked. Restore the encryption key or save them again.';}
+ const connectionSettings=()=>({rpcConfigured:!!env.SOLANA_RPC_URL,jupiterKeyConfigured:!!env.JUPITER_API_KEY,liveTrading:env.LIVE_TRADING_ENABLED==='true',storageError:settingsStorageError});
  const sessions=new Map();let loginWindow=Date.now(),loginAttempts=0,previewInFlight=false;
  const config=async()=>JSON.parse((await readVault(owner,db)).state).config;
  const live=createLivePerps({sqlite,env,config});
@@ -88,6 +92,22 @@ export async function createApp(options={}){
     const action=JSON.parse(await body(req,1024));
     if(!action||!['open','close','claim','pause','resume'].includes(action.kind)||Object.keys(action).some(k=>!['kind','market'].includes(k)))return send(400,{error:'Invalid trading action'});
     try{return send(200,await live.execute(action,req.headers['idempotency-key']||''));}catch(e){return send(422,{error:live.safeError(e)});}
+   }
+   if(url.pathname==='/api/settings'){
+    if(!authenticated(req))return send(401,{error:'Sign in required'});
+    if(req.method==='GET')return send(200,connectionSettings());
+    if(!requirePost())return;
+    if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
+    const input=JSON.parse(await body(req,4096));
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['rpcUrl','jupiterKey','clearJupiterKey','liveTrading'].includes(k))||typeof input.liveTrading!=='boolean'||input.clearJupiterKey!==undefined&&typeof input.clearJupiterKey!=='boolean'||input.rpcUrl!==undefined&&(typeof input.rpcUrl!=='string'||input.rpcUrl.length>2048)||input.jupiterKey!==undefined&&(typeof input.jupiterKey!=='string'||input.jupiterKey.length>512||/[\r\n]/.test(input.jupiterKey)))return send(400,{error:'Invalid connection settings.'});
+    if(!(expectedOrigin.startsWith('https:')||env.RAILWAY_ENVIRONMENT_ID||['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)&&/^127\.0\.0\.1:\d+$/.test(req.headers.host||'')))return send(400,{error:'Save connections over HTTPS or local loopback.'});
+    if(!env.DATA_DIR)return send(503,{error:'Attach a persistent volume and set DATA_DIR once in Railway.'});
+    const next={rpcUrl:input.rpcUrl?.trim()||env.SOLANA_RPC_URL||'',jupiterKey:input.clearJupiterKey?'':input.jupiterKey?.trim()||env.JUPITER_API_KEY||'',liveTrading:input.liveTrading};
+    if(next.rpcUrl){try{const rpcUrl=new URL(next.rpcUrl);if(rpcUrl.protocol!=='https:'||rpcUrl.username||rpcUrl.password||rpcUrl.hash)throw Error();}catch{return send(422,{error:'Enter a valid HTTPS Solana RPC URL without embedded username or password.'});}}
+    if(next.liveTrading&&!next.rpcUrl)return send(422,{error:'Save a Solana mainnet RPC URL before allowing live trading.'});
+    if(setupBusy||((next.rpcUrl!==(env.SOLANA_RPC_URL||'')||next.jupiterKey!==(env.JUPITER_API_KEY||''))&&(live.journal.active()||live.hasUnsettledCycle())))return send(409,{error:'Finish the current cycle before replacing connections. You can still disable live trading.'});
+    setupBusy=true;live.journal.pause(true);
+    try{secrets.saveSettings(next);applySettings(next);settingsStorageError='';return send(200,{ok:true,...connectionSettings()});}catch{return send(503,{error:'Connections could not be saved securely. Check persistent storage and the encryption key.'});}finally{setupBusy=false;}
    }
    if(url.pathname==='/api/strategy'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});

@@ -1,0 +1,17 @@
+"use client";
+import {useEffect,useState} from 'react';
+import {toast} from 'sonner';
+type Settings={rpcConfigured:boolean;jupiterKeyConfigured:boolean;liveTrading:boolean;storageError?:string};
+export function ConnectionSettings({enabled}:{enabled:boolean}){
+ const [state,setState]=useState<Settings|null>(null),[rpc,setRpc]=useState(''),[key,setKey]=useState(''),[keyless,setKeyless]=useState(false),[live,setLive]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ useEffect(()=>{if(!enabled)return;let cancelled=false;void fetch('/api/settings',{cache:'no-store'}).then(async r=>{if(!r.ok)throw Error('Connections could not be loaded. Sign in again.');const value=await r.json() as Settings;if(!cancelled){setState(value);setLive(value.liveTrading);setKeyless(!value.jupiterKeyConfigured);}}).catch(e=>{if(!cancelled)setError(e.message);});return()=>{cancelled=true;};},[enabled]);
+ async function save(){if(busy)return;setBusy(true);setError('');try{const response=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rpcUrl:rpc.trim(),jupiterKey:key.trim(),clearJupiterKey:keyless,liveTrading:live})});const result=await response.json() as Settings & {error?:string};if(!response.ok)throw Error(result.error||'Save failed.');setState(result);setRpc('');setKey('');toast.success('Connections saved. Use Start cycles when ready.');}catch(e){setError(e instanceof Error?e.message:'Save failed.');}finally{setBusy(false);}}
+ return <details className="panel settings-section"><summary>Connections <small> · {state?.rpcConfigured?'RPC saved':'Setup'} · {state?.liveTrading?'Live trading allowed':'Live trading off'}</small></summary>
+ <form onSubmit={e=>{e.preventDefault();void save();}}><p>Save once here. Changes apply immediately and survive deployments with your persistent volume. Secrets stay encrypted on the server.</p><fieldset disabled={!enabled||busy||!state} style={{border:0,padding:0,margin:0}}><div className="field-grid">
+ <label>Solana mainnet RPC URL<input type="password" autoComplete="new-password" spellCheck={false} maxLength={2048} value={rpc} placeholder={state?.rpcConfigured?'Saved · leave blank to keep':'https://your-mainnet-provider'} onChange={e=>setRpc(e.target.value)}/><small>Use a provider supporting transaction history and simulation.</small></label>
+ <label>Jupiter API key (optional)<input type="password" autoComplete="new-password" maxLength={512} disabled={keyless} value={key} placeholder={state?.jupiterKeyConfigured?'Saved · leave blank to keep':'Optional'} onChange={e=>setKey(e.target.value)}/></label></div>
+ <label><input type="checkbox" checked={keyless} onChange={e=>setKeyless(e.target.checked)}/> Use Jupiter without an API key</label>
+ <label><input type="checkbox" checked={live} onChange={e=>setLive(e.target.checked)}/> Allow real claims, longs and buybacks</label>
+ <p className="admin-note">Saving pauses cycles. Enabling this allows real transactions; press Start cycles separately. Disabling stops new submissions, while existing Jupiter TP/SL orders remain active.</p><button className="primary">{busy?'Saving…':'Save connections'}</button></fieldset>
+ {(error||state?.storageError)&&<p role="alert" className="negative">{error||state?.storageError}</p>}{!enabled&&<p className="admin-note">Manage connections on the deployed Admin page.</p>}</form></details>;
+}

@@ -103,7 +103,7 @@ test('admin setup encrypts the key, unifies wallet addresses, and persists witho
   const damaged=JSON.parse(stored.ciphertext);damaged.tag=Buffer.alloc(16).toString('base64');db.prepare('UPDATE developer_secret SET ciphertext=?').run(JSON.stringify(damaged));assert.throws(()=>walletSecrets(db,{DATA_DIR:join(f.dir,'data')}).read(),/cannot be decrypted/);db.close();
   const publicData=await(await fetch(f.origin+'/api/public')).text();assert.equal(publicData.includes(privateKey),false);assert.equal(publicData.includes('ciphertext'),false);
   assert.equal((await fetch(f.origin+'/api/trading',{method:'POST',headers:{...headers,Origin:'https://evil.example'},body:JSON.stringify({kind:'resume'})})).status,403);
-  const disabled=await fetch(f.origin+'/api/trading',{method:'POST',headers,body:JSON.stringify({kind:'resume'})});assert.equal(disabled.status,422);assert.match((await disabled.json()).error,/LIVE_TRADING_ENABLED/);
+  const disabled=await fetch(f.origin+'/api/trading',{method:'POST',headers,body:JSON.stringify({kind:'resume'})});assert.equal(disabled.status,422);assert.match((await disabled.json()).error,/Allow live trading in Admin/);
  }finally{await f.close();}
 });
 test('strategy edits require authentication, validate limits and preserve token and wallet configuration',async()=>{
@@ -124,4 +124,26 @@ test('strategy edits require authentication, validate limits and preserve token 
   const saved=await(await request('/api/public')).json();assert.equal(saved.config.leverage,8);assert.equal(saved.config.buybackPercent,100);assert.deepEqual(saved.config.allocation,strategy.allocation);assert.equal(saved.config.vault,before.config.vault);assert.equal(saved.config.tokenMint,before.config.tokenMint);
   assert.equal((await(await request('/api/trading',{headers})).json()).paused,true);
  }finally{await f.close();}
+});
+test('Admin connection settings are encrypted, redacted, applied immediately and restored on restart',async()=>{
+ const password=randomBytes(32).toString('hex'),f=await fixture({ADMIN_PASSWORD:password});
+ const rpc='https://rpc.example.invalid/?api-key=private-rpc-token',apiKey='private-jupiter-token';
+ try{
+  const request=(path,init={})=>fetch(f.origin+path,{redirect:'manual',...init});
+  assert.equal((await request('/api/settings')).status,401);
+  const login=await request('/admin/login',{method:'POST',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+  const headers={Cookie:login.headers.get('set-cookie').split(';')[0],Origin:f.origin,'Content-Type':'application/json'};
+  const send=(value,extra={})=>request('/api/settings',{method:'POST',headers:{...headers,...extra},body:JSON.stringify(value)});
+  assert.equal((await send({rpcUrl:rpc,liveTrading:true},{Origin:'https://evil.example'})).status,403);
+  assert.equal((await send({rpcUrl:'http://insecure.example',liveTrading:true})).status,422);
+  assert.equal((await send({rpcUrl:rpc,liveTrading:'true'})).status,400);
+  const response=await send({rpcUrl:rpc,jupiterKey:apiKey,liveTrading:true});assert.equal(response.status,200);const result=await response.json();assert.equal(result.liveTrading,true);assert.equal(result.rpcConfigured,true);assert.equal(result.jupiterKeyConfigured,true);assert.equal(JSON.stringify(result).includes('private-'),false);
+  const status=await(await request('/api/trading',{headers})).json();assert.equal(status.paused,true);assert.equal(status.reasons.some(r=>r.includes('RPC URL')||r.includes('Allow live trading')),false);
+  const db=new DatabaseSync(join(f.dir,'data','vault.sqlite'));const stored=db.prepare('SELECT ciphertext FROM runtime_settings').get().ciphertext;assert.equal(stored.includes(rpc),false);assert.equal(stored.includes(apiKey),false);db.close();
+  assert.equal((await send({liveTrading:false,clearJupiterKey:true})).status,200);
+  const saved=await(await request('/api/settings',{headers})).json();assert.equal(saved.rpcConfigured,true);assert.equal(saved.jupiterKeyConfigured,false);assert.equal(saved.liveTrading,false);
+  await f.app.close();f.app=await createApp({env:{DATA_DIR:join(f.dir,'data'),ADMIN_PASSWORD:password,LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'environment-fallback'},assetDir:join(f.dir,'assets')});await new Promise(r=>f.app.server.listen(0,'127.0.0.1',r));f.origin='http://127.0.0.1:'+f.app.server.address().port;
+  const relogin=await request('/admin/login',{method:'POST',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+  const restored=await(await request('/api/settings',{headers:{Cookie:relogin.headers.get('set-cookie').split(';')[0]}})).json();assert.equal(restored.rpcConfigured,true);assert.equal(restored.jupiterKeyConfigured,false);assert.equal(restored.liveTrading,false);
+ }finally{if(f.app.server.listening)await f.app.close();assert.ok(f.dir.startsWith(resolve('.sites-runtime')+requireSeparator()));rmSync(f.dir,{recursive:true,force:true});}
 });
