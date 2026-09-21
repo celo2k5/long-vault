@@ -13,10 +13,12 @@ Required server variables:
 - `DATA_DIR=/data`: attach a Railway persistent volume at `/data`. A variable alone does not create a volume.
 - `SOLANA_RPC_URL`: an HTTPS mainnet provider supporting account scans, simulation, transaction submission, and historical signature lookup.
 - `LIVE_TRADING_ENABLED=true`: explicitly permits real transactions. Default is disabled. Admin still starts paused.
-- `JUPITER_API_KEY`: required when automatic buybacks are enabled. Server destinations are pinned to `https://perps-api.jup.ag/v2` and `https://api.jup.ag/swap/v1`.
+- `JUPITER_API_KEY`: optional. Keyless buyback requests are spaced at least 2.1 seconds apart; free-key requests at least 1.1 seconds apart. Rate-limit and server errors receive bounded retries. Server destinations are pinned to `https://perps-api.jup.ag/v2` and `https://api.jup.ag/swap/v1`.
 - Optional `WALLET_ENCRYPTION_KEY`: a base64-encoded random 32-byte encryption key stored separately in Railway Variables.
 
-Open `/admin` and sign in. There are only three main inputs: token CA, developer private key, and cycle interval. Private keys accept Solana base58 or a JSON array of 64 bytes; seed phrases are not accepted. Saving derives the public address and uses it for all wallet roles, updates the public CA, and pauses cycles. A blank private-key field keeps the current wallet. After reviewing the displayed strategy and funding the wallet, **Start cycles** permits real claims and orders.
+Open `/admin` and sign in. The main setup has three inputs: token CA, developer private key, and cycle interval. Private keys accept Solana base58 or a JSON array of 64 bytes; seed phrases are not accepted. Saving derives the public address and uses it for all wallet roles, updates the public CA, and pauses cycles. A blank private-key field keeps the current wallet. After reviewing the displayed strategy and funding the wallet, **Start cycles** permits real claims and orders.
+
+The collapsible **Strategy** section edits leverage, BTC/ETH/SOL allocation, minimum cycle capital, TP/SL ROE, maximum position notional, slippage and buyback percentage. Allocations must total 100%. Changes are validated on the server and pause cycles; an unsettled cycle must finish before changes can be saved.
 
 The on-chain token creator must be the developer wallet. Entering an address cannot change Pump fee authority. Shared creator distributions, holder rewards, and non-SOL quote currencies are unsupported and stop execution.
 

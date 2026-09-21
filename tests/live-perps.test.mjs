@@ -199,3 +199,8 @@ test('finalized TP close automatically queues one profit buyback and survives re
   await service.reconcile();assert.equal(service.journal.get(buyback.id).status,'unknown');assert.equal(service.journal.paused(),true);
  }finally{service.close();db.close();}
 });
+test('keyless swap requests omit the API key and serialize requests at the documented keyless rate',async()=>{
+ const {swapApi}=await import('../scripts/buybacks.mjs');const original=globalThis.fetch,calls=[];
+ globalThis.fetch=async(url,options)=>{calls.push({at:Date.now(),url,headers:options.headers});return new Response(JSON.stringify({ok:true}),{status:200});};
+ try{await Promise.all([swapApi({},'quote?test=1'),swapApi({},'quote?test=2')]);assert.equal(calls.length,2);assert.ok(calls[1].at-calls[0].at>=2050);assert.equal('x-api-key' in calls[0].headers,false);assert.ok(calls.every(c=>c.url.startsWith('https://api.jup.ag/swap/v1/')));}finally{globalThis.fetch=original;}
+});

@@ -106,3 +106,22 @@ test('admin setup encrypts the key, unifies wallet addresses, and persists witho
   const disabled=await fetch(f.origin+'/api/trading',{method:'POST',headers,body:JSON.stringify({kind:'resume'})});assert.equal(disabled.status,422);assert.match((await disabled.json()).error,/LIVE_TRADING_ENABLED/);
  }finally{await f.close();}
 });
+test('strategy edits require authentication, validate limits and preserve token and wallet configuration',async()=>{
+ const password=randomBytes(32).toString('hex'),f=await fixture({ADMIN_PASSWORD:password});
+ try{
+  const request=(path,init={})=>fetch(f.origin+path,{redirect:'manual',...init});
+  assert.equal((await request('/api/strategy',{method:'POST'})).status,401);
+  const login=await request('/admin/login',{method:'POST',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+  const headers={Cookie:login.headers.get('set-cookie').split(';')[0],Origin:f.origin,'Content-Type':'application/json'};
+  const before=await(await request('/api/vault',{headers})).json();
+  const strategy={leverage:8,allocation:{BTC:50,ETH:25,SOL:25},minRewardUsd:150,takeProfit:80,stopLoss:20,maxPositionUsd:1200,slippageBps:75,buybackPercent:100};
+  const send=(value,extra={})=>request('/api/strategy',{method:'POST',headers:{...headers,...extra},body:JSON.stringify(value)});
+  assert.equal((await send(strategy,{Origin:'https://evil.example'})).status,403);
+  assert.equal((await send({...strategy,allocation:{BTC:50,ETH:50,SOL:50}})).status,422);
+  assert.equal((await send({...strategy,slippageBps:500})).status,422);
+  assert.equal((await send({...strategy,vault:Keypair.generate().publicKey.toBase58()})).status,400);
+  assert.equal((await send(strategy)).status,200);
+  const saved=await(await request('/api/public')).json();assert.equal(saved.config.leverage,8);assert.equal(saved.config.buybackPercent,100);assert.deepEqual(saved.config.allocation,strategy.allocation);assert.equal(saved.config.vault,before.config.vault);assert.equal(saved.config.tokenMint,before.config.tokenMint);
+  assert.equal((await(await request('/api/trading',{headers})).json()).paused,true);
+ }finally{await f.close();}
+});

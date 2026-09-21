@@ -33,10 +33,22 @@ export function buybackBudget(received,principal,feeReserve,percent,spent){
  const target=profit>0n?profit*BigInt(Math.floor(percent*100))/10000n:0n;
  return target>BigInt(spent)?target-BigInt(spent):0n;
 }
-async function swapApi(env,path,body){
- check(!!env.JUPITER_API_KEY,'Set JUPITER_API_KEY in Railway to enable automatic token buybacks.');
- const r=await fetch('https://api.jup.ag/swap/v1/'+path,{method:body?'POST':'GET',headers:{'x-api-key':env.JUPITER_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,redirect:'error',signal:AbortSignal.timeout(15000)});
- check(r.ok,'Jupiter buyback quote unavailable. The profit remains in USDC.');const text=await r.text();check(text.length<1000000,'Buyback response exceeds size limit.');return JSON.parse(text);
+let swapQueue=Promise.resolve(),nextSwapAt=0;
+export function swapApi(env,path,body){
+ const operation=swapQueue.then(async()=>{
+  for(let attempt=0;attempt<3;attempt++){
+   await new Promise(resolve=>setTimeout(resolve,Math.max(0,nextSwapAt-Date.now())));
+   nextSwapAt=Date.now()+(env.JUPITER_API_KEY?1100:2100);
+   const r=await fetch('https://api.jup.ag/swap/v1/'+path,{method:body?'POST':'GET',headers:{...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{}),'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,redirect:'error',signal:AbortSignal.timeout(15000)});
+   if((r.status===429||r.status>=500)&&attempt<2){
+    const seconds=Number(r.headers.get('retry-after'));
+    nextSwapAt=Math.max(nextSwapAt,Date.now()+Math.min(30000,Math.max(2100,Number.isFinite(seconds)?seconds*1000:0,2100*2**attempt)));
+    await r.body?.cancel();continue;
+   }
+   check(r.ok,'Jupiter buyback quote unavailable. The profit remains in USDC.');const text=await r.text();check(text.length<1000000,'Buyback response exceeds size limit.');return JSON.parse(text);
+  }
+ });
+ swapQueue=operation.catch(()=>{});return operation;
 }
 export function inspectSwap(ix,owner,mint,destination,amount,quote,slippage){
  check(ix.programId.equals(JUP),'Unexpected swap program.');

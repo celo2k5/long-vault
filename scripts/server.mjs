@@ -13,6 +13,7 @@ import {previewMainnet} from '../.sites-runtime/lib/mainnet.mjs';
 import {developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
 import {createLivePerps} from './live-perps.mjs';
 import {walletSecrets} from './wallet-secrets.mjs';
+import {validateConfig} from '../.sites-runtime/lib/engine.mjs';
 import {isPublicKey} from '../.sites-runtime/lib/address.mjs';
 
 const scrypt=promisify(scryptCallback);
@@ -88,6 +89,25 @@ export async function createApp(options={}){
     if(!action||!['open','close','claim','pause','resume'].includes(action.kind)||Object.keys(action).some(k=>!['kind','market'].includes(k)))return send(400,{error:'Invalid trading action'});
     try{return send(200,await live.execute(action,req.headers['idempotency-key']||''));}catch(e){return send(422,{error:live.safeError(e)});}
    }
+   if(url.pathname==='/api/strategy'){
+    if(!authenticated(req))return send(401,{error:'Sign in required'});
+    if(!requirePost())return;
+    if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
+    if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Finish the current cycle and buyback before changing strategy.'});
+    const input=JSON.parse(await body(req,2048));
+    const allowed=['leverage','allocation','minRewardUsd','takeProfit','stopLoss','maxPositionUsd','slippageBps','buybackPercent'];
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!allowed.includes(k))||allowed.some(k=>!(k in input))||!input.allocation||Object.keys(input.allocation).some(k=>!['BTC','ETH','SOL'].includes(k)))return send(400,{error:'Invalid strategy fields.'});
+    if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Finish the current cycle before changing strategy.'});
+    setupBusy=true;live.journal.pause(true);
+    try{
+     const next={...await config(),...input};
+     try{validateConfig(next);}catch(e){return send(422,{error:e.message});}
+     live.journal.pause(true);
+     const result=await command(owner,{type:'configure',config:next},'strategy-'+randomBytes(16).toString('hex'),db);
+     if(result.error)return send(422,{error:result.error});
+     return send(200,{ok:true,config:next});
+    }finally{setupBusy=false;}
+   }
    if(url.pathname==='/api/setup'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
     if(!requirePost())return;
@@ -96,6 +116,7 @@ export async function createApp(options={}){
     const input=JSON.parse(await body(req,4096));
     if(!input||Object.keys(input).some(k=>!['tokenMint','privateKey','cycleSeconds'].includes(k))||typeof input.tokenMint!=='string'||!isPublicKey(input.tokenMint)||!Number.isInteger(input.cycleSeconds)||input.cycleSeconds<10||input.cycleSeconds>86400||input.privateKey!==undefined&&(typeof input.privateKey!=='string'||input.privateKey.length>512))return send(400,{error:'Enter a valid token CA, a cycle interval of 10–86400 seconds, and a valid developer key.'});
     if(input.privateKey&&!(expectedOrigin.startsWith('https:')||env.RAILWAY_ENVIRONMENT_ID||['127.0.0.1','localhost','[::1]'].includes(url.hostname)&&req.headers.host?.startsWith('127.0.0.1:')))return send(400,{error:'Private keys can only be saved over HTTPS or a local loopback connection.'});
+    if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Finish the current cycle before changing setup.'});
     setupBusy=true;live.journal.pause(true);
     try{
      const saved=await config();let wallet=developerWalletStatus(input.privateKey||env.DEV_WALLET_PRIVATE_KEY);
