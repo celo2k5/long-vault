@@ -48,3 +48,9 @@ next-env.d.ts
 /.npm-cache/
 !.env.example
 *.tsbuildinfo
+
+# Private wallet storage and database backups
+**/.wallet-encryption-key
+*.sqlite
+*.sqlite-*
+/data/

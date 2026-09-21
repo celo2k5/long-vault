@@ -11,6 +11,9 @@ import {connectionReport} from '../.sites-runtime/lib/connections.mjs';
 import {previewMainnet} from '../.sites-runtime/lib/mainnet.mjs';
 
 import {developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
+import {createLivePerps} from './live-perps.mjs';
+import {walletSecrets} from './wallet-secrets.mjs';
+import {isPublicKey} from '../.sites-runtime/lib/address.mjs';
 
 const scrypt=promisify(scryptCallback);
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -19,7 +22,7 @@ const securityHeaders={'X-Content-Type-Options':'nosniff','Referrer-Policy':'str
 const loginHtml=(message='',locked=false)=>`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin · LONG Vault</title><link rel="icon" href="/long-pfp.png"><style>body{margin:0;background:#080c07;color:#edf5ea;font:15px system-ui;display:grid;place-items:center;min-height:100vh}main{width:min(360px,calc(100% - 48px))}h1{font-size:36px;margin-bottom:8px}p{color:#9da996;line-height:1.6}label{display:block;margin-top:28px}input,button{box-sizing:border-box;width:100%;padding:14px;margin-top:10px;border:1px solid #304526;border-radius:10px;font:inherit}input{background:#10180c;color:white}button{background:#2dd409;color:#081006;font-weight:700;cursor:pointer}a{color:#a9bb9e;text-decoration:none}.error{color:#eea485}</style></head><body><main><a href="/">← Back to $LONG</a><h1>Admin access</h1><p>Sign in to configure the vault.</p>${message?'<p class="error" role="alert">'+message+'</p>':''}${locked?'':`<form method="post" action="/admin/login"><label for="password">Admin password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256"><button type="submit">Sign in</button></form>`}</main></body></html>`;
 
 export async function createApp(options={}){
- const env=options.env||process.env;
+ const env={...(options.env||process.env)};
  const root=resolve(options.assetDir||'.sites-runtime/preview');
  const originValue=env.PUBLIC_ORIGIN||'';
  let expectedOrigin='';if(originValue){const u=new URL(originValue);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw Error('PUBLIC_ORIGIN must be an origin, e.g. https://longcoin.lol');if(u.protocol!=='https:'&&!['localhost','127.0.0.1','[::1]'].includes(u.hostname))throw Error('PUBLIC_ORIGIN must use HTTPS outside localhost');expectedOrigin=u.origin;}
@@ -27,8 +30,12 @@ export async function createApp(options={}){
  const password=env.ADMIN_PASSWORD||'';const authConfigured=password.length>=20&&password.length<=256;
  const salt=randomBytes(32),digest=authConfigured?await scrypt(password,salt,32):null;
  const {sqlite,db}=openStore(resolve(env.DATA_DIR||'.sites-runtime/data','vault.sqlite'));
+ const secrets=walletSecrets(sqlite,env);let walletStorageError='';
+ try{const stored=secrets.read();if(stored)env.DEV_WALLET_PRIVATE_KEY=stored;}catch{env.DEV_WALLET_PRIVATE_KEY='';walletStorageError='Stored wallet could not be unlocked. Restore the wallet encryption key or save the wallet again.';}
  const sessions=new Map();let loginWindow=Date.now(),loginAttempts=0,previewInFlight=false;
  const config=async()=>JSON.parse((await readVault(owner,db)).state).config;
+ const live=createLivePerps({sqlite,env,config});
+ let setupBusy=false;
  const cookieName='long_session';
  const authenticated=req=>{const token=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith(cookieName+'='))?.slice(cookieName.length+1);if(!token)return false;const key=hash(token),expires=sessions.get(key);if(!expires)return false;if(expires<Date.now()){sessions.delete(key);return false;}return true;};
  const sameOrigin=req=>{
@@ -70,7 +77,35 @@ export async function createApp(options={}){
    }
    if(url.pathname==='/api/public'){
     if(req.method!=='GET')return send(405,{error:'Method not allowed'});
-    const state=publicState(JSON.parse((await readVault(owner,db)).state));return send(200,{...state,events:[],owner:''});
+    const state=publicState(JSON.parse((await readVault(owner,db)).state)),trading=await live.status();return send(200,{...state,events:[],owner:'',trading:{enabled:trading.enabled,paused:trading.paused,phase:trading.cycle.phase,nextAt:trading.cycle.nextAt||0}});
+   }
+   if(url.pathname==='/api/trading'){
+    if(!authenticated(req))return send(401,{error:'Sign in required'});
+    if(req.method==='GET')return send(200,await live.status());
+    if(!requirePost())return;
+    if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
+    const action=JSON.parse(await body(req,1024));
+    if(!action||!['open','close','claim','pause','resume'].includes(action.kind)||Object.keys(action).some(k=>!['kind','market'].includes(k)))return send(400,{error:'Invalid trading action'});
+    try{return send(200,await live.execute(action,req.headers['idempotency-key']||''));}catch(e){return send(422,{error:live.safeError(e)});}
+   }
+   if(url.pathname==='/api/setup'){
+    if(!authenticated(req))return send(401,{error:'Sign in required'});
+    if(!requirePost())return;
+    if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
+    if(setupBusy||live.journal.active())return send(409,{error:'Wait for the current order or settings save to finish.'});
+    const input=JSON.parse(await body(req,4096));
+    if(!input||Object.keys(input).some(k=>!['tokenMint','privateKey','cycleSeconds'].includes(k))||typeof input.tokenMint!=='string'||!isPublicKey(input.tokenMint)||!Number.isInteger(input.cycleSeconds)||input.cycleSeconds<10||input.cycleSeconds>86400||input.privateKey!==undefined&&(typeof input.privateKey!=='string'||input.privateKey.length>512))return send(400,{error:'Enter a valid token CA, a cycle interval of 10–86400 seconds, and a valid developer key.'});
+    if(input.privateKey&&!(expectedOrigin.startsWith('https:')||env.RAILWAY_ENVIRONMENT_ID||['127.0.0.1','localhost','[::1]'].includes(url.hostname)&&req.headers.host?.startsWith('127.0.0.1:')))return send(400,{error:'Private keys can only be saved over HTTPS or a local loopback connection.'});
+    setupBusy=true;live.journal.pause(true);
+    try{
+     const saved=await config();let wallet=developerWalletStatus(input.privateKey||env.DEV_WALLET_PRIVATE_KEY);
+     if(wallet.status!=='configured')return send(400,{error:wallet.message});
+     if(input.privateKey){try{secrets.save(input.privateKey);env.DEV_WALLET_PRIVATE_KEY=input.privateKey;walletStorageError='';}catch{return send(503,{error:'Wallet could not be stored securely. Check DATA_DIR, the volume, and WALLET_ENCRYPTION_KEY.'});}finally{delete input.privateKey;}}
+     const next={...saved,tokenMint:input.tokenMint,vault:wallet.publicKey,creator:wallet.publicKey,treasury:wallet.publicKey,cooldownSeconds:input.cycleSeconds,dataSource:'mainnet'};
+     const result=await command(owner,{type:'configure',config:next},'setup-'+randomBytes(16).toString('hex'),db);
+     if(result.error)return send(422,{error:result.error});
+     live.resetCycle();return send(200,{ok:true,config:next,developerWallet:wallet});
+    }finally{setupBusy=false;}
    }
    if(url.pathname==='/api/keeper'){
     if(req.method!=='POST')return send(405,{error:'Method not allowed'});
@@ -91,8 +126,7 @@ export async function createApp(options={}){
    }
    if(url.pathname==='/api/vault'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
-    if(env.TRADING_MODE&&env.TRADING_MODE!=='mock')return send(503,{error:'TRADING_MODE must remain mock. Mainnet monitoring is selected in Admin.'});
-    const decorate=state=>({...publicState(state,!!env.KEEPER_SECRET),owner,authProvider:'password',storagePersistent:!!env.DATA_DIR,developerWallet:developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,state.config.vault,state.config.creator)});
+    const decorate=state=>({...publicState(state,!!env.KEEPER_SECRET),owner,authProvider:'password',storagePersistent:!!env.DATA_DIR,developerWallet:developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,state.config.vault,state.config.creator),walletStorageError});
     if(req.method==='GET')return send(200,decorate(JSON.parse((await readVault(owner,db)).state)));
     if(!requirePost())return;
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
@@ -110,7 +144,7 @@ export async function createApp(options={}){
   }catch(e){if(e instanceof SyntaxError)return send(400,{error:'Invalid request'});if(e.status===413)return send(413,{error:'Request too large'});console.error('Request failed:',e.name);send(503,{error:'Request could not be completed. Retry with the same command key.'});}
  });
  server.requestTimeout=20000;server.headersTimeout=15000;
- return {server,close:()=>new Promise((resolve,reject)=>server.close(error=>{sqlite.close();error?reject(error):resolve();}))};
+ return {server,close:()=>new Promise((resolve,reject)=>{live.close();server.close(error=>{sqlite.close();error?reject(error):resolve();});})};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const port=Number(process.env.PORT||3000);if(!Number.isInteger(port)||port<1||port>65535)throw Error('Invalid PORT');

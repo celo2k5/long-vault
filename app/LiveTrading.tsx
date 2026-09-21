@@ -1,0 +1,25 @@
+"use client";
+import {useEffect,useState,useRef} from 'react';
+type Order={id:string;kind:string;market:string;status:string;created:number;signature:string|null;message:string};
+type Status={enabled:boolean;paused:boolean;reasons:string[];cycle?:{phase:string;nextAt:number;message?:string};orders:Order[]};
+export function LiveTrading(){
+ const [state,setState]=useState<Status|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const pending=useRef<{key:string;action:{kind:string;market?:string}}|null>(null);
+ async function refresh(){try{const r=await fetch('/api/trading',{cache:'no-store'});if(!r.ok)throw Error(r.status===404?'Live trading controls are available on the Railway deployment.':'Sign in again to view trading controls.');setState(await r.json());}catch(e){setError(e instanceof Error?e.message:'Trading status unavailable');}}
+ useEffect(()=>{void refresh();const timer=setInterval(()=>void refresh(),5000);return()=>clearInterval(timer);},[]);
+ async function act(kind:string,market?:string,retry=false){
+  if(busy)return;const command=retry&&pending.current?pending.current:{key:crypto.randomUUID(),action:{kind,...(market?{market}:{})}};pending.current=command;setBusy(true);setError('');
+  try{const r=await fetch('/api/trading',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':command.key},body:JSON.stringify(command.action)});const value=await r.json() as Status & {error?:string};if(!r.ok){if(r.status<500)pending.current=null;throw Error(value.error||'Trading request failed');}setState(value);pending.current=null;}catch(e){setError(e instanceof Error?e.message:'Connection interrupted. Retry the same command.');}finally{setBusy(false);}
+ }
+ const working=state?.orders.some(o=>['preparing','signed','submitted','confirmed','unknown'].includes(o.status));
+ return <section className="panel settings-section"><h2>Long cycles <small>{state?.enabled?(state.paused?'Paused':'Enabled'):'Not enabled'}</small></h2>
+ <p>Claims creator fees with the developer wallet, then opens the allocated longs with on-chain TP and SL. The next cycle waits until all positions close. Uses available SOL or USDC, including existing wallet funds.</p>
+ {state?.reasons.map(reason=><p key={reason} className="admin-note">{reason}</p>)}
+ <div className="actions"><button type="button" className="primary" disabled={busy||!state?.enabled||!state.paused} onClick={()=>act('resume')}>Start cycles</button><button type="button" className="secondary" disabled={busy||!state||state.paused} onClick={()=>act('pause')}>Pause cycles</button><a className="text-button" href="https://jup.ag/perps" target="_blank" rel="noreferrer">Manage in Jupiter ↗</a></div>
+ <details><summary>Manual controls</summary><div className="actions"><button type="button" disabled={busy||!state?.enabled||state.paused||working} onClick={()=>act('claim','SOL')}>Claim fees</button></div><div className="actions">{['BTC','ETH','SOL'].map(m=><button key={m} type="button" disabled={busy||!state?.enabled||state.paused||working||!!pending.current} onClick={()=>act('open',m)}>Open {m} long</button>)}</div>
+ <div className="actions">{['BTC','ETH','SOL'].map(m=><button key={m} type="button" className="secondary" disabled={busy||!state?.enabled||working||!!pending.current} onClick={()=>act('close',m)}>Close {m}</button>)}</div></details>
+ {error&&<p role="alert" className="negative">{error}</p>}{pending.current&&!busy&&<button type="button" className="secondary" onClick={()=>act('',undefined,true)}>Retry same command</button>}
+ <p className="admin-note">Cycle: {state?.cycle?.phase||'idle'}{state?.cycle?.nextAt?' · next eligible at '+new Date(state.cycle.nextAt).toLocaleTimeString():''}</p>{state?.cycle?.message&&<p role="alert" className="negative">{state.cycle.message}</p>}<p className="risk-note">These controls move real funds when enabled. Pausing stops new opens and fresh broadcasts; existing on-chain TP/SL orders remain active. A submitted request is not a confirmed fill.</p>
+ <details><summary>Transaction history</summary>{!state?.orders.length?<p>No live orders submitted.</p>:state.orders.map(order=><div key={order.id} className="preview-result"><p>{order.market} · {order.kind} · {order.status}</p><small>{new Date(order.created).toLocaleString()} · {order.message}</small>{order.signature&&<p><a className="text-button" href={'https://solscan.io/tx/'+order.signature} target="_blank" rel="noreferrer">View transaction ↗</a></p>}</div>)}</details>
+ </section>;
+}

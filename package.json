@@ -16,7 +16,7 @@
     "start:sites": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "build:railway": "node scripts/portable-build.mjs",
     "start:railway": "node scripts/server.mjs",
-    "test": "node --experimental-strip-types tests/engine.test.ts && node --experimental-strip-types tests/store.test.ts && node --experimental-strip-types tests/mainnet.test.ts && node tests/server.test.mjs"
+    "test": "node --experimental-strip-types tests/engine.test.ts && node --experimental-strip-types tests/store.test.ts && node --experimental-strip-types tests/mainnet.test.ts && node tests/server.test.mjs && node tests/live-perps.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

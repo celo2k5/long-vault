@@ -19,6 +19,10 @@ createServer(async(req,res)=>{const send=(status,data)=>{res.writeHead(status,{'
 try{
  if(req.headers.host!=='127.0.0.1:5173')return send(403,{error:'Loopback host required'});
  const url=new URL(req.url,host);
+ if(url.pathname==='/admin/logout'){if(req.method!=='POST'||req.headers.origin!==host)return send(403,{error:'Same-origin POST required'});const token=(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('tek_local='))?.slice(10);sessions.delete(token);res.writeHead(303,{Location:'/','Set-Cookie':'tek_local=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'});return res.end();}
+ if(url.pathname==='/api/setup')return send(403,{error:'Wallet setup requires the authenticated production server.'});
+ if(url.pathname==='/api/trading')return send(200,{enabled:false,paused:true,reasons:['Local preview only. Live cycles are managed on the deployed Admin page.'],orders:[],cycle:{phase:'idle',nextAt:0}});
+ if(url.pathname==='/admin/login'){res.writeHead(302,{Location:'/signin-with-chatgpt?return_to=%2Fadmin'});return res.end();}
  if(url.pathname==='/signin-with-chatgpt'){const token=randomUUID();sessions.add(token);res.writeHead(302,{'Location':url.searchParams.get('return_to')==='/admin'?'/admin':'/','Set-Cookie':'tek_local='+token+'; HttpOnly; SameSite=Strict; Path=/'});return res.end();}
  if(url.pathname==='/api/public'&&req.method==='GET'){const row=await readVault('local_mock_admin',db);return send(200,{...publicState(JSON.parse(row.state)),events:[],owner:''});}
  if(url.pathname==='/api/connections'){

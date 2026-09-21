@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {randomBytes,randomUUID} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
+import {walletSecrets} from '../scripts/wallet-secrets.mjs';
 import {createApp} from '../scripts/server.mjs';
 
 async function fixture(env={}){
@@ -83,5 +85,24 @@ test('developer wallet validates secrets without exposing them in responses',asy
   const publicData=await(await fetch(f.origin+'/api/public')).text();assert.equal(publicData.includes(secret),false);assert.equal(publicData.includes('developerWallet'),false);
   const login=await fetch(f.origin+'/admin/login',{method:'POST',redirect:'manual',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
   const response=await fetch(f.origin+'/api/vault',{headers:{Cookie:login.headers.get('set-cookie').split(';')[0]}});const text=await response.text();assert.equal(text.includes(secret),false);assert.equal(JSON.parse(text).developerWallet.publicKey,publicKey);
+ }finally{await f.close();}
+});
+
+test('admin setup encrypts the key, unifies wallet addresses, and persists without returning secrets',async()=>{
+ const password=randomBytes(32).toString('hex'),wallet=Keypair.generate(),privateKey=JSON.stringify([...wallet.secretKey]);
+ const f=await fixture({ADMIN_PASSWORD:password});
+ try{
+  const login=await fetch(f.origin+'/admin/login',{method:'POST',redirect:'manual',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+  const headers={Cookie:login.headers.get('set-cookie').split(';')[0],Origin:f.origin,'Content-Type':'application/json'};
+  const input={tokenMint:'So11111111111111111111111111111111111111112',privateKey,cycleSeconds:180};
+  assert.equal((await fetch(f.origin+'/api/setup',{method:'POST',headers:{...headers,Origin:'https://evil.example'},body:JSON.stringify(input)})).status,403);
+  assert.equal((await fetch(f.origin+'/api/setup',{method:'POST',headers:{Origin:f.origin,'Content-Type':'application/json'},body:JSON.stringify(input)})).status,401);
+  const result=await fetch(f.origin+'/api/setup',{method:'POST',headers,body:JSON.stringify(input)});assert.equal(result.status,200);const text=await result.text();assert.equal(text.includes(privateKey),false);
+  const {config}=JSON.parse(text);assert.equal(config.vault,wallet.publicKey.toBase58());assert.equal(config.creator,config.vault);assert.equal(config.treasury,config.vault);assert.equal(config.cooldownSeconds,180);
+  const db=new DatabaseSync(join(f.dir,'data/vault.sqlite'));const stored=db.prepare('SELECT ciphertext FROM developer_secret').get();assert.equal(stored.ciphertext.includes(privateKey),false);assert.equal(walletSecrets(db,{DATA_DIR:join(f.dir,'data')}).read(),privateKey);
+  const damaged=JSON.parse(stored.ciphertext);damaged.tag=Buffer.alloc(16).toString('base64');db.prepare('UPDATE developer_secret SET ciphertext=?').run(JSON.stringify(damaged));assert.throws(()=>walletSecrets(db,{DATA_DIR:join(f.dir,'data')}).read(),/cannot be decrypted/);db.close();
+  const publicData=await(await fetch(f.origin+'/api/public')).text();assert.equal(publicData.includes(privateKey),false);assert.equal(publicData.includes('ciphertext'),false);
+  assert.equal((await fetch(f.origin+'/api/trading',{method:'POST',headers:{...headers,Origin:'https://evil.example'},body:JSON.stringify({kind:'resume'})})).status,403);
+  const disabled=await fetch(f.origin+'/api/trading',{method:'POST',headers,body:JSON.stringify({kind:'resume'})});assert.equal(disabled.status,422);assert.match((await disabled.json()).error,/LIVE_TRADING_ENABLED/);
  }finally{await f.close();}
 });

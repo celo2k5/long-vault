@@ -1,8 +1,8 @@
 // Server-only: secret material must never be serialized, persisted, or logged.
 import {Keypair} from '@solana/web3.js';
 export type WalletStatus={status:'missing'|'invalid'|'configured'|'mismatch';publicKey:string|null;message:string};
-export function developerWalletStatus(secret:string|undefined,vault?:string,creator?:string):WalletStatus{
- if(!secret?.trim())return {status:'missing',publicKey:null,message:'Set DEV_WALLET_PRIVATE_KEY in Railway Variables, then deploy.'};
+export function loadDeveloperWallet(secret:string|undefined):Keypair{
+ if(!secret?.trim())throw Error('Developer wallet secret is missing');
  let bytes:Uint8Array|undefined;
  try{
   const text=secret.trim();if(text.length>512)throw Error();
@@ -17,9 +17,14 @@ export function developerWalletStatus(secret:string|undefined,vault?:string,crea
    for(const c of text){if(c!=='1')break;decoded.unshift(0);}
    if(decoded.length!==64)throw Error();bytes=Uint8Array.from(decoded);
   }
-  const wallet=Keypair.fromSecretKey(bytes);const publicKey=wallet.publicKey.toBase58();wallet.secretKey.fill(0);
-  if((vault&&vault!==publicKey)||(creator&&creator!==publicKey))return {status:'mismatch',publicKey,message:'The developer wallet must match both the vault and creator authority.'};
-  return {status:'configured',publicKey,message:'Key validated. Live signing and trading remain disabled.'};
- }catch{return {status:'invalid',publicKey:null,message:'Invalid key. Use a Solana 64-byte secret key as base58 or a JSON byte array. Seed phrases are not accepted.'};}
+  return Keypair.fromSecretKey(bytes);
+ }catch{throw Error('Invalid developer wallet key. Use base58 or a JSON array of 64 bytes.');}
  finally{bytes?.fill(0);}
+}
+export function developerWalletStatus(secret:string|undefined,vault?:string,creator?:string):WalletStatus{
+ if(!secret?.trim())return {status:'missing',publicKey:null,message:'Set DEV_WALLET_PRIVATE_KEY in Railway Variables, then deploy.'};
+ try{const wallet=loadDeveloperWallet(secret),publicKey=wallet.publicKey.toBase58();
+  if((vault&&vault!==publicKey)||(creator&&creator!==publicKey))return {status:'mismatch',publicKey,message:'The developer wallet must match both the vault and creator authority.'};
+  return {status:'configured',publicKey,message:'Key validated. See Live positions for execution status.'};
+ }catch{return {status:'invalid',publicKey:null,message:'Invalid key. Use a Solana 64-byte secret key as base58 or a JSON byte array. Seed phrases are not accepted.'};}
 }
