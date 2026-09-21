@@ -130,14 +130,16 @@ test('Admin connection settings are encrypted, redacted, applied immediately and
  const rpc='https://rpc.example.invalid/?api-key=private-rpc-token',apiKey='private-jupiter-token';
  try{
   const request=(path,init={})=>fetch(f.origin+path,{redirect:'manual',...init});
-  assert.equal((await request('/api/settings')).status,401);
+  assert.equal((await request('/api/settings')).status,401);assert.equal((await request('/api/logs')).status,401);assert.equal((await request('/api/rpc-check',{method:'POST'})).status,401);
   const login=await request('/admin/login',{method:'POST',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
   const headers={Cookie:login.headers.get('set-cookie').split(';')[0],Origin:f.origin,'Content-Type':'application/json'};
   const send=(value,extra={})=>request('/api/settings',{method:'POST',headers:{...headers,...extra},body:JSON.stringify(value)});
   assert.equal((await send({rpcUrl:rpc,liveTrading:true},{Origin:'https://evil.example'})).status,403);
   assert.equal((await send({rpcUrl:'http://insecure.example',liveTrading:true})).status,422);
   assert.equal((await send({rpcUrl:rpc,liveTrading:'true'})).status,400);
+  assert.equal((await request('/api/rpc-check',{method:'POST',headers:{...headers,Origin:'https://evil.example'}})).status,403);
   const response=await send({rpcUrl:rpc,jupiterKey:apiKey,liveTrading:true});assert.equal(response.status,200);const result=await response.json();assert.equal(result.liveTrading,true);assert.equal(result.rpcConfigured,true);assert.equal(result.jupiterKeyConfigured,true);assert.equal(JSON.stringify(result).includes('private-'),false);
+  const logResponse=await request('/api/logs',{headers});assert.equal(logResponse.status,200);const logData=await logResponse.json();assert.ok(logData.entries.some(e=>e.source==='settings'));assert.equal(JSON.stringify(logData).includes('private-'),false);
   const status=await(await request('/api/trading',{headers})).json();assert.equal(status.paused,true);assert.equal(status.reasons.some(r=>r.includes('RPC URL')||r.includes('Allow live trading')),false);
   const db=new DatabaseSync(join(f.dir,'data','vault.sqlite'));const stored=db.prepare('SELECT ciphertext FROM runtime_settings').get().ciphertext;assert.equal(stored.includes(rpc),false);assert.equal(stored.includes(apiKey),false);db.close();
   assert.equal((await send({liveTrading:false,clearJupiterKey:true})).status,200);
@@ -146,4 +148,14 @@ test('Admin connection settings are encrypted, redacted, applied immediately and
   const relogin=await request('/admin/login',{method:'POST',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
   const restored=await(await request('/api/settings',{headers:{Cookie:relogin.headers.get('set-cookie').split(';')[0]}})).json();assert.equal(restored.rpcConfigured,true);assert.equal(restored.jupiterKeyConfigured,false);assert.equal(restored.liveTrading,false);
  }finally{if(f.app.server.listening)await f.app.close();assert.ok(f.dir.startsWith(resolve('.sites-runtime')+requireSeparator()));rmSync(f.dir,{recursive:true,force:true});}
+});
+
+test('Admin console redacts credentials, deduplicates repeated events and bounds retention',async()=>{
+ const {adminLogs}=await import('../scripts/admin-logs.mjs'),db=new DatabaseSync(':memory:');
+ try{const logs=adminLogs(db,{DEV_WALLET_PRIVATE_KEY:'private-wallet-secret',JUPITER_API_KEY:'private-api-key',SOLANA_RPC_URL:'https://provider.invalid/secret'});
+ logs.write('error','rpc','private-wallet-secret private-api-key https://provider.invalid/secret Bearer hidden-token');
+ const value=JSON.stringify(logs.read());for(const secret of ['private-wallet-secret','private-api-key','provider.invalid','hidden-token'])assert.equal(value.includes(secret),false);
+ logs.write('info','cycle','watching');logs.write('info','cycle','watching');assert.equal(logs.read().length,2);
+ for(let i=0;i<1002;i++)logs.write('info','cycle','step '+i);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM admin_logs').get().n,1000);assert.equal(logs.read().length,200);
+ }finally{db.close();}
 });

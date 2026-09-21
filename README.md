@@ -28,6 +28,12 @@ RPC URL (including provider credentials), optional Jupiter key and live-trading 
 
 Only hosting/domain setup, the persistent volume, `DATA_DIR`, and the initial `ADMIN_PASSWORD` need Railway. The optional encryption master key is also deployment infrastructure. The app cannot attach a Railway volume itself. Losing the volume or encryption key loses saved credentials. Decryption failure disables execution instead of silently restoring an environment credential.
 
+## Admin diagnostics
+
+**Connections → Test saved RPC** verifies the saved endpoint against Solana's complete mainnet genesis hash and reads a confirmed slot. It does not submit transactions. The former truncated-hash comparison has been corrected in both monitoring and execution.
+
+**Console** refreshes every five seconds with structured server, connection, settings, cycle and transaction events. Access requires an Admin session. It displays the latest 200 entries and retains at most 1,000 in SQLite across restarts. Repeated identical events are coalesced for a minute. Provider URLs and known credentials are redacted; raw provider responses, request bodies, signed transactions and arbitrary process stdout are never mirrored. Railway still owns hosting/build logs. Pausing log updates only freezes the console view, not trading.
+
 ## Wallet storage
 
 The private key is submitted only to the authenticated, same-origin setup endpoint over HTTPS (or local loopback for development). It is encrypted with AES-256-GCM, with its public address authenticated as associated data. Neither plaintext, ciphertext, nor signed transaction bytes are returned by the API. The browser field is cleared after a successful save. No localStorage storage is used.

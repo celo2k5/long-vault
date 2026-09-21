@@ -57,7 +57,7 @@ test('ambiguous sends and restarts only resend the original signed transaction',
  const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test-only',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()});
  let preparations=0;
- const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){sent.push(Buffer.from(bytes).toString('base64'));throw Error('RPC disconnected after accepting transaction');}};
+ const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){sent.push(Buffer.from(bytes).toString('base64'));throw Error('RPC disconnected after accepting transaction');}};
  const dependencies={rpc:()=>connection,prepare:async()=>{preparations++;return {tx:f.tx(),expected:f.expected,lastHeight:100};}};
  let service=createLivePerps({sqlite:db,env,config,dependencies});
  try{
@@ -72,7 +72,7 @@ test('ambiguous sends and restarts only resend the original signed transaction',
 });
 test('expired signatures remain unresolved and block duplicate spending',async()=>{
  const db=new DatabaseSync(':memory:'),f=fixture(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
- const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 101;},async sendRawTransaction(){assert.fail('Expired transaction must not be sent');}};
+ const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 101;},async sendRawTransaction(){assert.fail('Expired transaction must not be sent');}};
  const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()}),dependencies:{rpc:()=>connection,prepare:async()=>({tx:f.tx(),expected:f.expected,lastHeight:100})}});
  try{await service.execute({kind:'resume'});await service.execute({kind:'open',market:'SOL'},'expired-order');assert.equal(service.journal.get('expired-order').status,'unknown');assert.equal(service.journal.paused(),true);}finally{service.close();db.close();}
 });
@@ -86,7 +86,7 @@ test('cycle allocations are fixed before the first trade and survive partial pro
  const db=new DatabaseSync(':memory:'),f=fixture(),prepared=[];
  const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()});
- const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getMultipleAccountsInfo(){return [null,null,null];},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){return base58(VersionedTransaction.deserialize(bytes).signatures[0]);}};
+ const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getMultipleAccountsInfo(){return [null,null,null];},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){return base58(VersionedTransaction.deserialize(bytes).signatures[0]);}};
  let balance=100;
  const dependencies={rpc:()=>connection,api:async()=>({count:0,dataList:[]}),report:async()=>({creator:f.owner.toBase58(),rewardsSol:0,walletSol:0.15,usdc:balance,prices:{SOL:100}}),prepare:async action=>{prepared.push(action);return {tx:f.tx(),expected:f.expected,lastHeight:100};}};
  const service=createLivePerps({sqlite:db,env,config,dependencies});
@@ -101,7 +101,7 @@ test('cycle allocations are fixed before the first trade and survive partial pro
 test('cycles require the developer to be the verified creator and pause on mismatch',async()=>{
  const db=new DatabaseSync(':memory:'),f=fixture();
  const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
- const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()}),dependencies:{rpc:()=>({async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getMultipleAccountsInfo(){return [null,null,null];}}),api:async()=>({count:0,dataList:[]}),report:async()=>({creator:Keypair.generate().publicKey.toBase58(),rewardsSol:1,walletSol:1,usdc:100,prices:{SOL:100}}),prepare:async()=>assert.fail('Mismatched creator must never prepare transactions')}});
+ const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()}),dependencies:{rpc:()=>({async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getMultipleAccountsInfo(){return [null,null,null];}}),api:async()=>({count:0,dataList:[]}),report:async()=>({creator:Keypair.generate().publicKey.toBase58(),rewardsSol:1,walletSol:1,usdc:100,prices:{SOL:100}}),prepare:async()=>assert.fail('Mismatched creator must never prepare transactions')}});
  try{await service.execute({kind:'resume'});await service.advanceCycle();assert.equal(service.journal.paused(),true);assert.match((await service.status()).cycle.message,/creator/);}finally{service.close();db.close();}
 });
 
@@ -110,7 +110,7 @@ test('real order preparation validates quote, chain accounts and simulation befo
   const db=new DatabaseSync(':memory:'),f=fixture();let sends=0,simulations=0;
   const data=Buffer.alloc(165);USDC.toBuffer().copy(data,0);f.owner.toBuffer().copy(data,32);data.writeBigUInt64LE(10000000n,64);
   const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58(),minRewardUsd:10,allocation:{BTC:0,ETH:0,SOL:100}});
-  const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getBalance(){return 200000000;},async getAccountInfo(address){return address.equals(associated(f.owner))?{data,owner:TOKEN}:null;},async getProgramAccounts(){return [];},async getBlockHeight(){return 1;},async getFeeForMessage(){return {value:5000};},async simulateTransaction(){simulations++;return {value:{err:null,accounts:[{lamports:199995000}]}};},async getSignatureStatuses(){return {value:[null]};},async sendRawTransaction(bytes){sends++;return base58(VersionedTransaction.deserialize(bytes).signatures[0]);}};
+  const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getBalance(){return 200000000;},async getAccountInfo(address){return address.equals(associated(f.owner))?{data,owner:TOKEN}:null;},async getProgramAccounts(){return [];},async getBlockHeight(){return 1;},async getFeeForMessage(){return {value:5000};},async simulateTransaction(){simulations++;return {value:{err:null,accounts:[{lamports:199995000}]}};},async getSignatureStatuses(){return {value:[null]};},async sendRawTransaction(bytes){sends++;return base58(VersionedTransaction.deserialize(bytes).signatures[0]);}};
   const api=async(path,body)=>{
    if(path.startsWith('positions?'))return {count:0,dataList:[]};if(path.startsWith('market-stats'))return {price:'100'};
    assert.equal(body.inputTokenAmount,'10000000');assert.equal(body.tpsl.length,2);
@@ -178,7 +178,7 @@ test('finalized TP close automatically queues one profit buyback and survives re
  const db=new DatabaseSync(':memory:'),f=fixture(),owner=f.owner.toBase58(),request=f.expected.position,mint=Keypair.generate().publicKey.toBase58();
  const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const config=async()=>({...defaults,vault:owner,tokenMint:mint});let sent=0,prepared=0;
- const rpc={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getAccountInfo(){return null;},async getSignaturesForAddress(){return [{signature:'close-fill',err:null}];},async getTransaction(){return payout(owner,request,150000000);},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(){sent++;throw Error('ambiguous send');}};
+ const rpc={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getAccountInfo(){return null;},async getSignaturesForAddress(){return [{signature:'close-fill',err:null}];},async getTransaction(){return payout(owner,request,150000000);},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(){sent++;throw Error('ambiguous send');}};
  const dependencies={rpc:()=>rpc,prepare:async action=>{prepared++;assert.equal(action.kind,'buyback');assert.equal(action.amount,'30000000');return {tx:f.tx(),lastHeight:100,expected:{kind:'buyback',owner,amount:action.amount,source:associated(owner).toBase58(),destination:tokenAta(owner,mint).toBase58(),mint,minimum:'1'}};}};
  let service=createLivePerps({sqlite:db,env,config,dependencies});
  try{

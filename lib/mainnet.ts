@@ -10,7 +10,7 @@ import {isPublicKey} from './address.ts';
 
 export type LiveEnvironment={DEV_WALLET_PRIVATE_KEY?:string;SOLANA_RPC_URL?:string;JUPITER_API_URL?:string;JUPITER_API_KEY?:string};
 export const MINTS={SOL:'So11111111111111111111111111111111111111112',BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',ETH:'7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',USDC:'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'};
-const MAINNET_GENESIS='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+export const MAINNET_GENESIS='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 const key=z.string().refine(isPublicKey,'Invalid public key');
 const integer=z.string().regex(/^-?\d+$/).refine(v=>Number.isSafeInteger(Number(v)),'Amount exceeds supported precision');
 const numeric=z.union([z.string().min(1),z.number()]).transform(Number).refine(Number.isFinite);
@@ -50,7 +50,7 @@ export async function jupiter(env:LiveEnvironment,path:string,body?:unknown){
  const response=await boundedFetch(perpsBase(env)+'/'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-client-platform':'long-vault',...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{})},...(body?{body:JSON.stringify(body)}:{})});
  return json(response);
 }
-async function confirmedMainnet(connection:Connection){if(await connection.getGenesisHash()!==MAINNET_GENESIS)throw Error('RPC is not Solana mainnet; Jupiter perpetuals require mainnet');}
+export async function confirmedMainnet(connection:Connection){if(await connection.getGenesisHash()!==MAINNET_GENESIS)throw Error('RPC is not Solana mainnet; Jupiter perpetuals require mainnet');}
 export async function readMainnet(config:Config,env:LiveEnvironment):Promise<MainnetReport>{
  validateConfig(config);
  const r:MainnetReport={checkedAt:Date.now(),checks:[],executionEnabled:false,creator:null,rewardsSol:null,walletSol:null,usdc:null,positions:null,prices:{}};

@@ -3,7 +3,7 @@ import {PublicKey,VersionedTransaction,TransactionMessage,ComputeBudgetProgram} 
 import pumpSdk from '../node_modules/@pump-fun/pump-sdk/dist/index.js';
 import {z} from 'zod';
 import {loadDeveloperWallet,developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
-import {rpcConnection,jupiter,parsePositions,readMainnet} from '../.sites-runtime/lib/mainnet.mjs';
+import {rpcConnection,jupiter,parsePositions,readMainnet,MAINNET_GENESIS} from '../.sites-runtime/lib/mainnet.mjs';
 import {validateConfig,MARKETS} from '../.sites-runtime/lib/engine.mjs';
 import {PERPS,USDC,associated,positionAddress,inspectPerpsTransaction,decodeRequest,discriminator} from './perps-policy.mjs';
 
@@ -17,13 +17,13 @@ const activeSql="('preparing','signed','submitted','confirmed','unknown')";
 const safeError=e=>e?.safe===true?e.message:'Order could not be prepared. Check RPC, balances, API availability and transaction policy; no replacement order was sent.';
 function fail(message){throw Object.assign(Error(message),{safe:true});}
 export class TradeJournal{
- constructor(sqlite){this.db=sqlite;sqlite.exec(`CREATE TABLE IF NOT EXISTS live_control (id INTEGER PRIMARY KEY CHECK(id=1), paused INTEGER NOT NULL DEFAULT 1); INSERT OR IGNORE INTO live_control(id) VALUES(1);
+ constructor(sqlite,log=()=>{}){this.db=sqlite;this.log=log;sqlite.exec(`CREATE TABLE IF NOT EXISTS live_control (id INTEGER PRIMARY KEY CHECK(id=1), paused INTEGER NOT NULL DEFAULT 1); INSERT OR IGNORE INTO live_control(id) VALUES(1);
  CREATE TABLE IF NOT EXISTS live_orders (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, market TEXT NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, expected TEXT, wire TEXT, signature TEXT, last_height INTEGER, message TEXT NOT NULL DEFAULT '');
  CREATE UNIQUE INDEX IF NOT EXISTS single_live_order ON live_orders((1)) WHERE status IN ${activeSql};`);}
  get(id){return this.db.prepare('SELECT * FROM live_orders WHERE id=?').get(id);}
  active(){return this.db.prepare(`SELECT * FROM live_orders WHERE status IN ${activeSql} LIMIT 1`).get();}
  paused(){return !!this.db.prepare('SELECT paused FROM live_control WHERE id=1').get().paused;}
- pause(value){this.db.prepare('UPDATE live_control SET paused=? WHERE id=1').run(value?1:0);}
+ pause(value){if(this.paused()!==value)this.log('info','trading',value?'Automation paused.':'Automation resumed.');this.db.prepare('UPDATE live_control SET paused=? WHERE id=1').run(value?1:0);}
  list(){return this.db.prepare('SELECT id,kind,market,status,created,updated,signature,message FROM live_orders ORDER BY created DESC LIMIT 100').all();}
  reserve(id,action){
   if(!/^[a-zA-Z0-9_-]{8,120}$/.test(id))fail('A valid command key is required.');
@@ -32,7 +32,7 @@ export class TradeJournal{
   try{this.db.prepare("INSERT INTO live_orders(id,fingerprint,kind,market,status,created,updated) VALUES(?,?,?,?,'preparing',?,?)").run(id,fp,action.kind,action.market,Date.now(),Date.now());}catch{fail('Another order is already in progress.');}
   return {row:this.get(id),duplicate:false};
  }
- update(id,status,message,from){return this.db.prepare('UPDATE live_orders SET status=?,message=?,updated=? WHERE id=?'+(from?' AND status=?':'')).run(status,message,Date.now(),id,...(from?[from]:[])).changes;}
+ update(id,status,message,from){const prior=this.get(id);if(prior&&(!from||prior.status===from)&&(prior.status!==status||prior.message!==message))this.log(['failed','unknown'].includes(status)?'error':'info','transaction',prior.kind+' '+prior.market+' · '+status+' · '+message);return this.db.prepare('UPDATE live_orders SET status=?,message=?,updated=? WHERE id=?'+(from?' AND status=?':'')).run(status,message,Date.now(),id,...(from?[from]:[])).changes;}
  signed(id,{expected,wire,signature,lastHeight}){
   // Commit the exact signed bytes BEFORE any network broadcast. Never rebuild on a retry.
   const changed=this.db.prepare("UPDATE live_orders SET status='signed',expected=?,wire=?,signature=?,last_height=?,updated=?,message='Signed; awaiting submission' WHERE id=? AND status='preparing'").run(JSON.stringify(expected),wire,signature,lastHeight,Date.now(),id).changes;
@@ -45,10 +45,11 @@ function chainSize(account,owner,market){
  return b.readBigUInt64LE(161);
 }
 export function createLivePerps({sqlite,env,config,dependencies={}}){
- const journal=new TradeJournal(sqlite),rpc=dependencies.rpc||(()=>rpcConnection(env)),api=dependencies.api||((path,body)=>jupiter(env,path,body));
+ const log=dependencies.log||(()=>{});
+ const journal=new TradeJournal(sqlite,log),rpc=dependencies.rpc||(()=>rpcConnection(env)),api=dependencies.api||((path,body)=>jupiter(env,path,body));
  sqlite.exec("CREATE TABLE IF NOT EXISTS live_cycle (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL); INSERT OR IGNORE INTO live_cycle VALUES(1,'{\"phase\":\"idle\",\"nextAt\":0}');");
  const cycle=()=>JSON.parse(sqlite.prepare('SELECT state FROM live_cycle WHERE id=1').get().state);
- const setCycle=value=>sqlite.prepare('UPDATE live_cycle SET state=? WHERE id=1').run(JSON.stringify(value));
+ const setCycle=value=>{const prior=cycle();if(prior.phase!==value.phase||prior.message!==value.message)log(value.phase==='error'?'error':'info','cycle',value.phase+(value.message?' · '+value.message:''));return sqlite.prepare('UPDATE live_cycle SET state=? WHERE id=1').run(JSON.stringify(value));};
  // A preparation has no persisted signature and therefore could never be broadcast.
  // CAS in signed() fences any older process still finishing that preparation.
  sqlite.prepare("UPDATE live_orders SET status='failed',message='Preparation interrupted before signing; safe to submit a new command',updated=? WHERE status='preparing'").run(Date.now());
@@ -56,7 +57,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  let reconciling=false,cycling=false,closed=false;
  function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Allow live trading in Admin → Connections to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Save a Solana mainnet RPC URL in Admin → Connections.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(!c.tokenMint)missing.push('Save the token CA.');return missing;}
  async function status(){const c=await config();return {enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
- async function verifiedConnection(){const connection=rpc();if(await connection.getGenesisHash()!=='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')fail('Live perpetuals require a verified Solana mainnet RPC.');return connection;}
+ async function verifiedConnection(){const connection=rpc();if(await connection.getGenesisHash()!==MAINNET_GENESIS)fail('Live perpetuals require a verified Solana mainnet RPC.');return connection;}
  async function prepare(action,c){
   validateConfig(c);const connection=await verifiedConnection();
   if(action.kind==='buyback')return prepareBuyback(connection,env,c,BigInt(action.amount),dependencies.swapApi);

@@ -35,3 +35,11 @@ test('reads retry transient failures but never follow redirects',async()=>{
 test('network errors do not disclose secret-bearing provider URLs',async()=>{
  await assert.rejects(boundedFetch('https://example.com',{},(async()=>{throw Error('Failed https://rpc.example/?api-key=secret');}) as typeof fetch),e=>e instanceof Error&&!e.message.includes('secret')&&e.message.includes('Network'));
 });
+
+test('mainnet verification accepts the full cluster hash and rejects truncated or devnet hashes',async()=>{
+ const {MAINNET_GENESIS,confirmedMainnet}=await import('../lib/mainnet.ts');
+ assert.equal(MAINNET_GENESIS,'5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d');
+ await confirmedMainnet({getGenesisHash:async()=>MAINNET_GENESIS} as never);
+ await assert.rejects(confirmedMainnet({getGenesisHash:async()=>'5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'} as never),/not Solana mainnet/);
+ await assert.rejects(confirmedMainnet({getGenesisHash:async()=>'EtWTRABZaYq6iMfeYKouRu166VU2xqa1'} as never),/not Solana mainnet/);
+});

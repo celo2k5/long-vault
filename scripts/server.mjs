@@ -8,7 +8,8 @@ import {promisify} from 'node:util';
 import {openStore} from './sqlite-store.mjs';
 import {readVault,command,publicState} from '../.sites-runtime/lib/store.mjs';
 import {connectionReport} from '../.sites-runtime/lib/connections.mjs';
-import {previewMainnet} from '../.sites-runtime/lib/mainnet.mjs';
+import {adminLogs} from './admin-logs.mjs';
+import {rpcConnection,MAINNET_GENESIS,previewMainnet} from '../.sites-runtime/lib/mainnet.mjs';
 
 import {developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
 import {createLivePerps} from './live-perps.mjs';
@@ -39,7 +40,9 @@ export async function createApp(options={}){
  const connectionSettings=()=>({rpcConfigured:!!env.SOLANA_RPC_URL,jupiterKeyConfigured:!!env.JUPITER_API_KEY,liveTrading:env.LIVE_TRADING_ENABLED==='true',storageError:settingsStorageError});
  const sessions=new Map();let loginWindow=Date.now(),loginAttempts=0,previewInFlight=false;
  const config=async()=>JSON.parse((await readVault(owner,db)).state).config;
- const live=createLivePerps({sqlite,env,config});
+ const logs=adminLogs(sqlite,env);logs.write('info','server','Server started. Admin diagnostics ready.');
+ const live=createLivePerps({sqlite,env,config,dependencies:{log:logs.write}});
+ let rpcCheckBusy=false;
  let setupBusy=false;
  const cookieName='long_session';
  const authenticated=req=>{const token=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith(cookieName+'='))?.slice(cookieName.length+1);if(!token)return false;const key=hash(token),expires=sessions.get(key);if(!expires)return false;if(expires<Date.now()){sessions.delete(key);return false;}return true;};
@@ -93,6 +96,23 @@ export async function createApp(options={}){
     if(!action||!['open','close','claim','pause','resume'].includes(action.kind)||Object.keys(action).some(k=>!['kind','market'].includes(k)))return send(400,{error:'Invalid trading action'});
     try{return send(200,await live.execute(action,req.headers['idempotency-key']||''));}catch(e){return send(422,{error:live.safeError(e)});}
    }
+   if(url.pathname==='/api/logs'){
+    if(!authenticated(req))return send(401,{error:'Sign in required'});
+    if(req.method!=='GET')return send(405,{error:'Method not allowed'});
+    return send(200,{entries:logs.read()});
+   }
+   if(url.pathname==='/api/rpc-check'){
+    if(!authenticated(req))return send(401,{error:'Sign in required'});
+    if(!requirePost())return;
+    if(rpcCheckBusy)return send(409,{error:'An RPC check is already running.'});
+    rpcCheckBusy=true;
+    try{
+     if(!env.SOLANA_RPC_URL){logs.write('warn','rpc','No RPC URL saved.');return send(422,{error:'Save a Solana mainnet RPC URL in Connections first.'});}
+     const connection=rpcConnection(env),genesis=await connection.getGenesisHash();
+     if(genesis!==MAINNET_GENESIS){const error='The saved RPC is not Solana mainnet. Replace it with a mainnet endpoint in Connections.';logs.write('error','rpc',error);return send(422,{error});}
+     const slot=await connection.getSlot('confirmed');logs.write('info','rpc','Mainnet verified. Confirmed slot '+slot+'.');return send(200,{ok:true,message:'Solana mainnet verified. Confirmed slot '+slot+'.'});
+    }catch{const error='RPC check failed. Check the saved URL, provider credentials, rate limits and provider availability.';logs.write('error','rpc',error);return send(422,{error});}finally{rpcCheckBusy=false;}
+   }
    if(url.pathname==='/api/settings'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
     if(req.method==='GET')return send(200,connectionSettings());
@@ -107,7 +127,7 @@ export async function createApp(options={}){
     if(next.liveTrading&&!next.rpcUrl)return send(422,{error:'Save a Solana mainnet RPC URL before allowing live trading.'});
     if(setupBusy||((next.rpcUrl!==(env.SOLANA_RPC_URL||'')||next.jupiterKey!==(env.JUPITER_API_KEY||''))&&(live.journal.active()||live.hasUnsettledCycle())))return send(409,{error:'Finish the current cycle before replacing connections. You can still disable live trading.'});
     setupBusy=true;live.journal.pause(true);
-    try{secrets.saveSettings(next);applySettings(next);settingsStorageError='';return send(200,{ok:true,...connectionSettings()});}catch{return send(503,{error:'Connections could not be saved securely. Check persistent storage and the encryption key.'});}finally{setupBusy=false;}
+    try{secrets.saveSettings(next);applySettings(next);settingsStorageError='';logs.write('info','settings','Connections saved; automation paused.');return send(200,{ok:true,...connectionSettings()});}catch{return send(503,{error:'Connections could not be saved securely. Check persistent storage and the encryption key.'});}finally{setupBusy=false;}
    }
    if(url.pathname==='/api/strategy'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
@@ -183,7 +203,7 @@ export async function createApp(options={}){
    let stats;try{stats=statSync(file);}catch{return send(404,{error:'Not found'});}if(!stats.isFile())return send(404,{error:'Not found'});
    const mime={'.html':'text/html; charset=utf-8','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'};
    res.writeHead(200,{...securityHeaders,'Content-Type':mime[extname(file)]||'application/octet-stream','Cache-Control':url.pathname.startsWith('/assets/')?'public, max-age=31536000, immutable':'no-cache'});res.end(req.method==='HEAD'?undefined:readFileSync(file));
-  }catch(e){if(e instanceof SyntaxError)return send(400,{error:'Invalid request'});if(e.status===413)return send(413,{error:'Request too large'});console.error('Request failed:',e.name);send(503,{error:'Request could not be completed. Retry with the same command key.'});}
+  }catch(e){if(e instanceof SyntaxError)return send(400,{error:'Invalid request'});if(e.status===413)return send(413,{error:'Request too large'});logs.write('error','server','A request failed. Retry with the same command key.');console.error('Request failed');send(503,{error:'Request could not be completed. Retry with the same command key.'});}
  });
  server.requestTimeout=20000;server.headersTimeout=15000;
  return {server,close:()=>new Promise((resolve,reject)=>{live.close();server.close(error=>{sqlite.close();error?reject(error):resolve();});})};
