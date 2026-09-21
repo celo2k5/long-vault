@@ -225,7 +225,7 @@ test('SOL test funding converts the $10 limit without allocating the full wallet
  for(const price of [0,-1,NaN,Infinity])assert.throws(()=>testCollateralAmount('SOL',price),/price/);
 });
 
-test('instant Jupiter keeper transactions are explicitly blocked before wallet signing',()=>{
+test('legacy validator cannot bypass the dedicated instant keeper validation',()=>{
  const f=fixture(),keeper=Keypair.generate().publicKey,apiKeeper=Keypair.generate().publicKey;
  const ix=new TransactionInstruction({programId:PERPS,keys:[{pubkey:keeper,isSigner:true,isWritable:false},{pubkey:apiKeeper,isSigner:true,isWritable:false},{pubkey:f.owner,isSigner:true,isWritable:true}],data:discriminator('global:instant_increase_position')});
  const tx=f.tx([ix]);assert.equal(tx.message.header.numRequiredSignatures,3);
@@ -233,4 +233,33 @@ test('instant Jupiter keeper transactions are explicitly blocked before wallet s
  assert.ok(tx.signatures.every(sig=>sig.every(b=>b===0)));
  const unexpected=f.tx([new TransactionInstruction({programId:PERPS,keys:[{pubkey:keeper,isSigner:true,isWritable:false}],data:Buffer.alloc(8)})]);
  assert.throws(()=>inspectPerpsTransaction(unexpected,[],f.expected),/unexpected signer/);
+});
+import {readFileSync} from 'node:fs';
+import {AddressLookupTableAccount} from '@solana/web3.js';
+import {inspectInstantTransaction} from '../scripts/instant-perps.mjs';
+test('current Jupiter co-signed SOL-to-BTC quote validates against recorded mainnet custody data',async()=>{
+ const f=JSON.parse(readFileSync(new URL('./fixtures/instant-open-sol-btc.json',import.meta.url))),tx=VersionedTransaction.deserialize(Buffer.from(f.quote.serializedTxBase64,'base64'));
+ const tables=f.tables.map(t=>new AddressLookupTableAccount({key:new PublicKey(t.key),state:{deactivationSlot:18446744073709551615n,lastExtendedSlot:0,lastExtendedSlotStartIndex:0,addresses:t.addresses.map(k=>new PublicKey(k))}}));
+ const info=key=>{const a=f.records[key.toBase58()];return a?{owner:new PublicKey(a.owner),data:Buffer.from(a.data,'base64')}:null;};
+ const rpc={async getMultipleAccountsInfo(keys){return keys.map(info);},async getAccountInfo(key){return info(key);}};
+ const now=Date.now;Date.now=()=>f.capturedAt;
+ try{
+  const result=await inspectInstantTransaction(tx,tables,f.expected,rpc);assert.equal(result.instant,true);assert.equal(result.requests.length,2);
+  await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,size:'1'},rpc),/amount or side/);
+  await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,tp:1},rpc),/TP\/SL price/);
+  await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,minOut:'999999999'},rpc),/collateral-conversion/);
+  const tampered=VersionedTransaction.deserialize(tx.serialize());tampered.message.compiledInstructions.at(-1).data[10]^=1;
+  await assert.rejects(inspectInstantTransaction(tampered,tables,f.expected,rpc),/keeper signature/);
+  const ownerSwap=VersionedTransaction.deserialize(tx.serialize());ownerSwap.message.staticAccountKeys[0]=Keypair.generate().publicKey;
+  await assert.rejects(inspectInstantTransaction(ownerSwap,tables,f.expected,rpc),/fee payer/);
+  await assert.rejects(inspectInstantTransaction(tx,tables,f.expected,{...rpc,getMultipleAccountsInfo:async keys=>keys.map(()=>({owner:TOKEN,data:Buffer.alloc(8)}))}),/custody owner/);
+ }finally{Date.now=now;}
+});
+test('instant orders use keeper execution and retain the exact wallet-signed message on uncertain retries',async()=>{
+ const db=new DatabaseSync(':memory:'),f=fixture(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])},sent=[];
+ const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()});
+ const rpc={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(){assert.fail('Instant orders require the keeper endpoint');}};
+ const dependencies={rpc:()=>rpc,prepare:async()=>({tx:f.tx(),expected:{...f.expected,instant:true},lastHeight:100}),api:async(path,body)=>{assert.equal(path,'transaction/execute');assert.equal(body.action,'increase-position');sent.push(body.serializedTxBase64);throw Error('Connection lost after submission');}};
+ let service=createLivePerps({sqlite:db,env,config,dependencies});
+ try{await service.execute({kind:'resume'});await service.execute({kind:'open',market:'SOL'},'instant-order');assert.equal(service.journal.get('instant-order').status,'signed');service.close();service=createLivePerps({sqlite:db,env,config,dependencies});await service.reconcile();assert.equal(sent.length,2);assert.equal(sent[0],sent[1]);}finally{service.close();db.close();}
 });

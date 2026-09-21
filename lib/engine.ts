@@ -1,7 +1,7 @@
 import {isPublicKey} from './address.ts';
 export const MARKETS = ['BTC','ETH','SOL'] as const;
 export type Market = typeof MARKETS[number];
-export type Config = { leverage:number; allocation:Record<Market,number>; minRewardUsd:number; takeProfit:number; stopLoss:number; maxPositionUsd:number; slippageBps:number; cooldownSeconds:number; buybackPercent:number; treasury:string; vault:string; tokenMint:string; rpcEnv:string; jupiterEnv:string; creator?:string; dataSource?:'mock'|'mainnet' };
+export type Config = { leverage:number; allocation:Record<Market,number>; minRewardUsd:number; takeProfit:number; stopLoss:number; maxPositionUsd:number; slippageBps:number; collateralSlippageBps?:number; cooldownSeconds:number; buybackPercent:number; treasury:string; vault:string; tokenMint:string; rpcEnv:string; jupiterEnv:string; creator?:string; dataSource?:'mock'|'mainnet' };
 export const defaults:Config={leverage:5,allocation:{BTC:40,ETH:30,SOL:30},minRewardUsd:100,takeProfit:100,stopLoss:25,maxPositionUsd:1000,slippageBps:50,cooldownSeconds:120,buybackPercent:75,treasury:'',vault:'',tokenMint:'',rpcEnv:'SOLANA_RPC_URL',jupiterEnv:'JUPITER_API_URL'};
 export type Position={market:Market;collateral:number;notional:number;entry:number;mark:number;leverage:number;tp:number;sl:number;liquidation:number;status:'open'|'closed'|'liquidated';pnl:number;roe:number;history:number[];openedAt:number};
 export type Event={id:string;time:number;kind:string;detail:string;amount:number;signature:string|null;status:'confirmed'|'failed'};
@@ -13,6 +13,7 @@ export function validateConfig(c:Config):void {
  if(!c||typeof c!=='object'||!c.allocation)throw Error('Invalid configuration.');
  const ranges:Record<string,[number,number]>={leverage:[1,100],minRewardUsd:[1,1000000],takeProfit:[1,1000],stopLoss:[1,90],maxPositionUsd:[1,1000000],slippageBps:[1,300],cooldownSeconds:[10,86400],buybackPercent:[0,100]};
  for(const [key,[lo,hi]] of Object.entries(ranges)){const n=c[key as keyof Config];if(!finite(n)||(n as number)<lo||(n as number)>hi)throw Error(key+' must be between '+lo+' and '+hi+'.');}
+ if(c.collateralSlippageBps!==undefined&&(!Number.isInteger(c.collateralSlippageBps)||c.collateralSlippageBps<1||c.collateralSlippageBps>1000))throw Error('Collateral swap slippage must be 1–1000 whole basis points.');
  if(!Number.isInteger(c.slippageBps)||!Number.isInteger(c.cooldownSeconds))throw Error('Slippage and cooldown must be whole numbers.');
  if(MARKETS.some(m=>!finite(c.allocation[m])||c.allocation[m]<0||c.allocation[m]>100)||Math.abs(MARKETS.reduce((n,m)=>n+c.allocation[m],0)-100)>0.000001)throw Error('BTC, ETH and SOL allocations must total 100%.');
  for(const key of ['treasury','vault','tokenMint'] as const)if(typeof c[key]!=='string'||(c[key]&&!isPublicKey(c[key])))throw Error(key+' must be a 32-byte Solana public address.');

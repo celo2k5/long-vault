@@ -135,8 +135,8 @@ export async function createApp(options={}){
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
     if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Finish the current cycle and buyback before changing strategy.'});
     const input=JSON.parse(await body(req,2048));
-    const allowed=['leverage','allocation','minRewardUsd','takeProfit','stopLoss','maxPositionUsd','slippageBps','buybackPercent'];
-    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!allowed.includes(k))||allowed.some(k=>!(k in input))||!input.allocation||Object.keys(input.allocation).some(k=>!['BTC','ETH','SOL'].includes(k)))return send(400,{error:'Invalid strategy fields.'});
+    const allowed=['leverage','allocation','minRewardUsd','takeProfit','stopLoss','maxPositionUsd','slippageBps','buybackPercent','collateralSlippageBps'];
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!allowed.includes(k))||allowed.some(k=>k!=='collateralSlippageBps'&&!(k in input))||!input.allocation||Object.keys(input.allocation).some(k=>!['BTC','ETH','SOL'].includes(k)))return send(400,{error:'Invalid strategy fields.'});
     if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Finish the current cycle before changing strategy.'});
     setupBusy=true;live.journal.pause(true);
     try{

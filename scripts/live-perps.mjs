@@ -7,6 +7,7 @@ import {rpcConnection,jupiter,parsePositions,readMainnet,MAINNET_GENESIS} from '
 import {validateConfig,MARKETS} from '../.sites-runtime/lib/engine.mjs';
 import {PERPS,USDC,associated,positionAddress,inspectPerpsTransaction,decodeRequest,discriminator} from './perps-policy.mjs';
 
+import {inspectInstantTransaction} from './instant-perps.mjs';
 import {prepareBuyback,closeReceipt,buybackBudget,tokenDelta} from './buybacks.mjs';
 
 const fingerprint=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -103,7 +104,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const collateral=action.testCollateralUsd===10?testCollateralAmount(expected.inputToken,price):action.budget??Math.floor(Math.min(balance*c.allocation[action.market]/100,c.maxPositionUsd/c.leverage)/price*decimals);
    if(!Number.isSafeInteger(collateral)||collateral>Number(amount)||collateral/decimals*price>c.maxPositionUsd/c.leverage*1.01||collateral/decimals*price<10)fail('The allocation must cover at least $10 collateral within the position limit.');
    expected.collateral=String(collateral);
-   expected.minOut=String(Math.floor(collateral/decimals*price/mark*({SOL:1e9,BTC:1e8,ETH:1e8}[action.market])*(1-c.slippageBps/10000)));
+   expected.minOut=String(Math.floor(collateral/decimals*price/mark*({SOL:1e9,BTC:1e8,ETH:1e8}[action.market])*(1-(c.collateralSlippageBps??c.slippageBps)/10000)));
    raw=await api('positions/increase',{asset:action.market,inputToken:expected.inputToken,inputTokenAmount:String(collateral),side:'long',maxSlippageBps:String(c.slippageBps),leverage:String(c.leverage),walletAddress:owner,tpsl:[{receiveToken:'USDC',triggerPrice:String(expected.tp),requestType:'tp'},{receiveToken:'USDC',triggerPrice:String(expected.sl),requestType:'sl'}]});
   }else{
    if(!existing||existing.side!=='long'||size===0n)fail('No verified long position exists in this market.');
@@ -116,17 +117,32 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const q=quote.quote,entry=Number(rawAmount.parse(q.averagePriceUsd)),liquidation=Number(rawAmount.parse(q.liquidationPriceUsd)),leverage=Number(q.leverage),notional=Number(q.sizeUsdDelta);
    if(!Number.isFinite(leverage)||leverage<1||leverage>c.leverage*1.01||notional<=0||notional>c.maxPositionUsd*1e6||entry<=0||Math.abs(entry/expected.mark-1)*10000>c.slippageBps||liquidation<=0||liquidation>=expected.sl||expected.sl>=entry||expected.tp<=entry)fail('Quote exceeds size, leverage, slippage or liquidation limits.');
    expected.size=q.sizeUsdDelta;
+   // Bind transaction execution bounds to the validated quote entry, rather than an earlier moving market read.
+   expected.mark=entry;expected.maxPrice=Number((BigInt(entry)*BigInt(10000+c.slippageBps)+9999n)/10000n);
   }
   const tx=VersionedTransaction.deserialize(Buffer.from(quote.serializedTxBase64,'base64'));
   if(tx.message.recentBlockhash!==quote.txMetadata.blockhash||await connection.getBlockHeight()>Number(quote.txMetadata.lastValidBlockHeight))fail('Jupiter transaction has expired or has inconsistent metadata.');
   const tables=await Promise.all(tx.message.addressTableLookups.map(async lookup=>{const result=await connection.getAddressLookupTable(lookup.accountKey);if(!result.value)fail('Transaction lookup table unavailable.');return result.value;}));
-  let inspection;try{inspection=inspectPerpsTransaction(tx,tables,expected);}catch(e){fail(e.message);}
-  expected.requests=inspection.requests;
+  let inspection;try{inspection=tx.message.header.numRequiredSignatures===3?await inspectInstantTransaction(tx,tables,expected,connection):inspectPerpsTransaction(tx,tables,expected);}catch(e){fail(e.message);}
+  expected.requests=inspection.requests;expected.instant=!!inspection.instant;
   const fee=await connection.getFeeForMessage(tx.message);if(fee.value===null||fee.value>2100000)fail('Network fee exceeds 0.0021 SOL.');
-  const simulation=await connection.simulateTransaction(tx,{sigVerify:false,replaceRecentBlockhash:false,commitment:'confirmed',accounts:{encoding:'base64',addresses:[owner]}});
+  const simulation=await connection.simulateTransaction(tx,{sigVerify:false,replaceRecentBlockhash:false,commitment:'confirmed',accounts:{encoding:'base64',addresses:expected.instant&&action.kind==='close'?[owner,associated(owner).toBase58()]:[owner]}});
   if(simulation.value.err)fail('On-chain simulation failed. No transaction was signed.');
   const after=simulation.value.accounts?.[0],funding=expected.inputToken==='SOL'&&action.kind==='open'?Number(expected.collateral):0;if(!after||sol-after.lamports>funding+35000000||after.lamports<5000000)fail('Simulation exceeds the SOL spending limit or leaves too little fee reserve.');
+  if(expected.instant&&action.kind==='close'){
+   const payout=simulation.value.accounts?.[1],data=payout?.data?.[0]?Buffer.from(payout.data[0],'base64'):null;
+   if(!data||data.length<165||new PublicKey(data.subarray(0,32)).toBase58()!==USDC.toBase58()||new PublicKey(data.subarray(32,64)).toBase58()!==owner||data.readBigUInt64LE(64)-(tokenAccount?.data.readBigUInt64LE(64)||0n)<BigInt(expected.minOut))fail('Instant close simulation did not return the required USDC payout.');
+  }
   return {tx,expected,lastHeight:Number(quote.txMetadata.lastValidBlockHeight)};
+ }
+ async function submitPersisted(connection,row,expected){
+  if(expected.instant){
+   // The owner's fee-payer signature fixes the message and transaction ID even before keeper co-signing.
+   // Never reconstruct the message or replace an ambiguous transaction.
+   const result=await api('transaction/execute',{action:row.kind==='open'?'increase-position':'decrease-position',serializedTxBase64:row.wire});
+   if(typeof result.txid!=='string'||result.txid!==row.signature)fail('Jupiter returned an unexpected transaction signature.');return result.txid;
+  }
+  return connection.sendRawTransaction(Buffer.from(row.wire,'base64'),{skipPreflight:false,maxRetries:0,preflightCommitment:'confirmed'});
  }
  async function reconcile(){
   if(reconciling||closed)return;reconciling=true;
@@ -150,12 +166,12 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
     if(requests.some(r=>r&&!r.owner.equals(PERPS)))fail('Unexpected request account owner.');
     const requestPending=requests.some((r,i)=>r&&!expected.requests[i].trigger&&!decodeRequest(r.data).executed);
     if(!requestPending&&row.kind==='close'&&size===0n){journal.update(row.id,'filled','Position closed on-chain.');return;}
-    if(row.kind==='open'&&!requestPending&&size===0n&&requests.every(r=>!r||decodeRequest(r.data).executed)){
-     journal.update(row.id,'settled','Request finalized and settled; no open position or active trigger remains. This does not establish realized profit.');return;
+    if(row.kind==='open'&&!requestPending&&size===0n&&(expected.instant||requests.every(r=>!r||decodeRequest(r.data).executed))){
+     journal.update(row.id,'settled','Request finalized and settled; no open position remains. This does not establish realized profit.');return;
     }
     if(row.kind==='open'&&!requestPending&&size>0n){
      const protections=requests.filter((r,i)=>r&&expected.requests[i].trigger).map(r=>decodeRequest(r.data));
-     const protectedPosition=protections.some(r=>r.type===1&&r.above===true&&r.trigger===BigInt(expected.tp)&&r.entire&&!r.executed)&&protections.some(r=>r.type===1&&r.above===false&&r.trigger===BigInt(expected.sl)&&r.entire&&!r.executed);
+     const protectedPosition=protections.some(r=>r.type===1&&r.above===true&&r.trigger===BigInt(expected.tp)&&(r.entire||expected.instant&&r.size>=size)&&!r.executed)&&protections.some(r=>r.type===1&&r.above===false&&r.trigger===BigInt(expected.sl)&&(r.entire||expected.instant&&r.size>=size)&&!r.executed);
      if(protectedPosition){journal.update(row.id,'filled','Long is open; on-chain TP and SL verified.');return;}
      journal.pause(true);journal.update(row.id,'unknown','Position exists but TP/SL could not be verified. New orders paused; inspect this position in Jupiter.');return;
     }
@@ -166,7 +182,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(height>row.last_height){journal.pause(true);journal.update(row.id,'unknown','Signature not found after expiry. New orders paused; reconcile with an archival RPC before retrying.');return;}
    // Pausing stops fresh broadcasts, but still tracks already-submitted transactions.
    if(closed||journal.paused()||reasons(c).length||expected.owner!==c.vault)return;
-   try{const signature=await connection.sendRawTransaction(Buffer.from(row.wire,'base64'),{skipPreflight:false,maxRetries:0,preflightCommitment:'confirmed'});if(signature!==row.signature)fail('RPC returned an unexpected signature.');journal.update(row.id,'submitted','Submitted; awaiting on-chain confirmation and keeper execution.');}catch{journal.update(row.id,'signed','Submission uncertain. Tracking the original signature; retries reuse identical signed bytes.');}
+   try{const signature=await submitPersisted(connection,row,expected);if(signature!==row.signature)fail('RPC returned an unexpected signature.');journal.update(row.id,'submitted','Submitted; awaiting on-chain confirmation and keeper execution.');}catch{journal.update(row.id,'signed','Submission uncertain. Tracking the original signature; retries reuse identical signed bytes.');}
   }catch{
    // Provider errors never mark an ambiguous send as failed or leak secret URLs.
    if(!closed){const row=journal.active();if(row&&row.status!=='preparing')journal.update(row.id,row.status,'Chain verification unavailable. Original order retained; no replacement will be created.');}
@@ -197,7 +213,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   }catch(e){journal.update(id,'failed',safeError(e),'preparing');return status();}
   // A manual protective close is allowed while paused. Submit its persisted bytes once.
   if(action.kind==='close'&&journal.paused()){
-   const row=journal.get(id);try{const connection=await verifiedConnection();await connection.sendRawTransaction(Buffer.from(row.wire,'base64'),{skipPreflight:false,maxRetries:0});journal.update(id,'submitted','Close submitted; awaiting keeper execution.');}catch{journal.update(id,'signed','Close submission uncertain; original signature retained. Resume to allow identical-byte retries.');}
+   const row=journal.get(id);try{const connection=await verifiedConnection();const signature=await submitPersisted(connection,row,JSON.parse(row.expected));if(signature!==row.signature)fail('Unexpected submission signature.');journal.update(id,'submitted','Close submitted; awaiting keeper execution.');}catch{journal.update(id,'signed','Close submission uncertain; original signature retained. Resume to allow identical-byte retries.');}
   }else await reconcile();
   return status();
  }
@@ -278,6 +294,12 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
     const e=JSON.parse(close.expected);if(e.owner===c.vault&&e.position===expected.position)requests.push(...e.requests.map(r=>r.address));
    }
    let found=false;
+   for(const close of sqlite.prepare("SELECT * FROM live_orders WHERE kind='close' AND status='filled' AND created>=? AND expected IS NOT NULL").all(open.created)){
+    const e=JSON.parse(close.expected);if(!e.instant||e.owner!==c.vault||e.position!==expected.position)continue;
+    const tx=await connection.getTransaction(close.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});if(!tx)throw Error('Close receipt unavailable');
+    const amount=tokenDelta(tx,associated(c.vault).toBase58(),USDC.toBase58(),c.vault);
+    if(amount>0n){sqlite.prepare('INSERT OR IGNORE INTO close_receipts VALUES(?,?,?,?)').run(close.signature,'instant-'+close.id,state.id,String(amount));found=true;}
+   }
    for(const request of new Set(requests)){
     let before,complete=false;
     for(let page=0;page<10;page++){
@@ -287,6 +309,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
       if(sqlite.prepare('SELECT 1 FROM close_receipts WHERE signature=? AND request=?').get(signature.signature,request)){found=true;continue;}
       const tx=await connection.getTransaction(signature.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});
       if(!tx)throw Error('Historical receipt unavailable');
+      if(sqlite.prepare("SELECT 1 FROM close_receipts WHERE signature=? AND request LIKE 'instant-%'").get(signature.signature)){found=true;continue;}
       const amount=closeReceipt(tx,c.vault,request);
       if(amount>0n){sqlite.prepare('INSERT OR IGNORE INTO close_receipts VALUES(?,?,?,?)').run(signature.signature,request,state.id,String(amount));found=true;}
      }

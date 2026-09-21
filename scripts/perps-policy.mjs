@@ -113,5 +113,5 @@ export function decodeRequest(data){
  const r=new Reader(data);r.offset=200;
  const change=r.byte(),type=r.byte(),side=r.byte();r.option(r.u64);r.option(r.u64);r.option(r.u64);
  const trigger=r.option(r.u64),above=r.option(r.bool),entire=r.option(r.bool),executed=r.bool();
- return {owner:new PublicKey(data.subarray(8,40)).toBase58(),position:new PublicKey(data.subarray(104,136)).toBase58(),change,type,side,trigger,above,entire,executed};
+ return {size:Buffer.from(data).readBigUInt64LE(184),owner:new PublicKey(data.subarray(8,40)).toBase58(),position:new PublicKey(data.subarray(104,136)).toBase58(),change,type,side,trigger,above,entire,executed};
 }

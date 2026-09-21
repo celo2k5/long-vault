@@ -2,9 +2,13 @@
 
 A green/black public dashboard and password-protected Admin for a single developer wallet. Mainnet balances and positions are real reads; unavailable data stays unavailable. No simulated fee claims are shown.
 
-## Current live-execution limitation
+## Instant perpetual execution
 
-An unsigned BTC/SOL-funded quote checked on September 21, 2026 returned Jupiter's **instant** position format: owner plus keeper and API-keeper signers, with instant increase/TP-SL instructions and an additional collateral-swap instruction. This app's validator/submission/settlement adapter supports the older position-request format. The current instant quote is therefore blocked before wallet signing. Funding changes do not resolve it. Live opens through that route are not operational until a complete instant-format adapter, keeper submission flow and settlement accounting are implemented and verified. Do not remove signer checks to bypass this block. No funded execution has been verified.
+The adapter supports Jupiter's three-signer instant format as well as legacy position requests. It verifies the API keeper signature, decodes the pinned on-chain interface, checks collateral conversion and full-size TP/SL, simulates the original message, and persists the wallet-signed bytes before submitting through Jupiter's keeper endpoint. Ambiguous submissions retry the same bytes and signature. Confirmation and USDC payout accounting use finalized on-chain records, never the submission response alone.
+
+A fresh unsigned BTC/SOL-funded quote passed instruction validation and read-only mainnet simulation on September 21, 2026 (443,289 compute units). This diagnostic used an explicitly wider conversion bound; saved production limits were unchanged. Recorded quote and mocked retry tests also cover the adapter. No funded end-to-end execution has been verified. Unknown formats, keeper-key changes, failed simulations and out-of-limit quotes stop before signing.
+
+**Collateral conversion has its own slippage limit in Admin → Strategy.** Existing settings retain their previous slippage limit unless explicitly changed. Observed SOL-to-BTC quotes allowed roughly 5% conversion slippage and therefore fail the default 0.5% limit. Increasing this setting explicitly permits a larger conversion loss; it does not change the position-entry slippage limit.
 
 ## Railway setup
 
