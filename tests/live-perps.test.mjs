@@ -248,6 +248,7 @@ test('current Jupiter co-signed SOL-to-BTC quote validates against recorded main
   await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,size:'1'},rpc),/amount or side/);
   await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,tp:1},rpc),/TP\/SL price/);
   await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,minOut:'999999999'},rpc),/collateral-conversion/);
+  await assert.rejects(inspectInstantTransaction(tx,tables,{...f.expected,minOut:'999999999',conversionReferenceOut:1000000000,collateralSlippageBps:500},rpc),/5\.00% limit \(500 bps\).*No transaction was signed/);
   const tampered=VersionedTransaction.deserialize(tx.serialize());tampered.message.compiledInstructions.at(-1).data[10]^=1;
   await assert.rejects(inspectInstantTransaction(tampered,tables,f.expected,rpc),/keeper signature/);
   const ownerSwap=VersionedTransaction.deserialize(tx.serialize());ownerSwap.message.staticAccountKeys[0]=Keypair.generate().publicKey;

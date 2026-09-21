@@ -43,7 +43,11 @@ export async function inspectInstantTransaction(tx,tables,e,connection){
   if(name==='instantIncreasePositionPreSwap'){
    check(++swaps===1&&a.owner===e.owner&&a.fundingAccount===input&&a.receivingAccount===funding,'unexpected pre-swap destination');
    check(custodies.get(a.receivingCustody).mint.equals(inputMint)&&a.dispensingCustody===CUSTODY[e.market],'pre-swap custody mismatch');
-   check(big(p.amountIn)===BigInt(e.collateral),'pre-swap input amount mismatch');check(big(p.minAmountOut)>=BigInt(e.minOut),'Jupiter collateral-conversion minimum output is below your configured slippage limit. The trade was not signed; use matching collateral or explicitly adjust collateral-swap slippage in Strategy.');continue;
+   check(big(p.amountIn)===BigInt(e.collateral),'pre-swap input amount mismatch');if(big(p.minAmountOut)<BigInt(e.minOut)){
+    const reference=Number(e.conversionReferenceOut),limit=Number(e.collateralSlippageBps),minimum=Number(p.minAmountOut.toString());
+    const detail=Number.isFinite(reference)&&reference>0&&Number.isFinite(limit)?` Quote minimum implies approximately ${(Math.ceil((1-minimum/reference)*10000)/100).toFixed(2)}% total conversion loss versus your ${(limit/100).toFixed(2)}% limit (${limit} bps). This compares the quote minimum against the pre-conversion market value, including conversion costs; it is not a predicted fill.`:'';
+    check(false,'Jupiter collateral-conversion minimum output is below your configured slippage limit.'+detail+' No transaction was signed. Your limit has not been changed.');
+   }continue;
   }
   check(a.custody===CUSTODY[e.market]&&a.collateralCustody===CUSTODY[e.market],'position custody mismatch');
   if(name==='instantIncreasePosition'){

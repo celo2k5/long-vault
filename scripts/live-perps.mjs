@@ -104,7 +104,9 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const collateral=action.testCollateralUsd===10?testCollateralAmount(expected.inputToken,price):action.budget??Math.floor(Math.min(balance*c.allocation[action.market]/100,c.maxPositionUsd/c.leverage)/price*decimals);
    if(!Number.isSafeInteger(collateral)||collateral>Number(amount)||collateral/decimals*price>c.maxPositionUsd/c.leverage*1.01||collateral/decimals*price<10)fail('The allocation must cover at least $10 collateral within the position limit.');
    expected.collateral=String(collateral);
-   expected.minOut=String(Math.floor(collateral/decimals*price/mark*({SOL:1e9,BTC:1e8,ETH:1e8}[action.market])*(1-(c.collateralSlippageBps??c.slippageBps)/10000)));
+   expected.conversionReferenceOut=collateral/decimals*price/mark*({SOL:1e9,BTC:1e8,ETH:1e8}[action.market]);
+   expected.collateralSlippageBps=c.collateralSlippageBps??c.slippageBps;
+   expected.minOut=String(Math.floor(expected.conversionReferenceOut*(1-expected.collateralSlippageBps/10000)));
    raw=await api('positions/increase',{asset:action.market,inputToken:expected.inputToken,inputTokenAmount:String(collateral),side:'long',maxSlippageBps:String(c.slippageBps),leverage:String(c.leverage),walletAddress:owner,tpsl:[{receiveToken:'USDC',triggerPrice:String(expected.tp),requestType:'tp'},{receiveToken:'USDC',triggerPrice:String(expected.sl),requestType:'sl'}]});
   }else{
    if(!existing||existing.side!=='long'||size===0n)fail('No verified long position exists in this market.');
