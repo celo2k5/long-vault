@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1789998270994,
+      "tag": "0000_tek_vault",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789998398220,
+      "tag": "0001_durable_receipts",
+      "breakpoints": true
+    }
+  ]
+}
