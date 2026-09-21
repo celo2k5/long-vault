@@ -204,3 +204,16 @@ test('keyless swap requests omit the API key and serialize requests at the docum
  globalThis.fetch=async(url,options)=>{calls.push({at:Date.now(),url,headers:options.headers});return new Response(JSON.stringify({ok:true}),{status:200});};
  try{await Promise.all([swapApi({},'quote?test=1'),swapApi({},'quote?test=2')]);assert.equal(calls.length,2);assert.ok(calls[1].at-calls[0].at>=2050);assert.equal('x-api-key' in calls[0].headers,false);assert.ok(calls.every(c=>c.url.startsWith('https://api.jup.ag/swap/v1/')));}finally{globalThis.fetch=original;}
 });
+test('token-free position tests enforce fixed collateral and never start automatic cycles or claims',async()=>{
+ const db=new DatabaseSync(':memory:'),f=fixture(),actions=[];
+ const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',PERPS_TEST_MODE:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const rpc={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(){throw Error('uncertain send');}};
+ const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:''}),dependencies:{rpc:()=>rpc,prepare:async action=>{actions.push(action);return {tx:f.tx(),expected:{...f.expected},lastHeight:100};},api:async()=>{assert.fail('Test mode must not start an automated cycle');}}});
+ try{
+  const state=await service.execute({kind:'resume'});assert.equal(state.enabled,true);assert.equal(state.testMode,true);
+  await service.advanceCycle();assert.equal(actions.length,0);
+  await assert.rejects(service.execute({kind:'claim',market:'SOL'},'test-claim'),/disabled in position test mode/);
+  await service.execute({kind:'open',market:'SOL',budget:999999999},'test-no-token');assert.equal(actions[0].budget,10000000);assert.equal(actions[0].inputToken,'USDC');assert.equal(JSON.parse(service.journal.get('test-no-token').expected).testMode,true);
+  service.journal.update('test-no-token','filled','Test fill');assert.equal(service.hasUnsettledCycle(),true);
+ }finally{service.close();db.close();}
+});

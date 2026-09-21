@@ -35,9 +35,9 @@ export async function createApp(options={}){
  const secrets=walletSecrets(sqlite,env);let walletStorageError='';
  try{const stored=secrets.read();if(stored)env.DEV_WALLET_PRIVATE_KEY=stored;}catch{env.DEV_WALLET_PRIVATE_KEY='';walletStorageError='Stored wallet could not be unlocked. Restore the wallet encryption key or save the wallet again.';}
  let settingsStorageError='';
- const applySettings=settings=>{env.SOLANA_RPC_URL=settings.rpcUrl;env.JUPITER_API_KEY=settings.jupiterKey;env.LIVE_TRADING_ENABLED=settings.liveTrading?'true':'false';};
+ const applySettings=settings=>{env.SOLANA_RPC_URL=settings.rpcUrl;env.JUPITER_API_KEY=settings.jupiterKey;env.LIVE_TRADING_ENABLED=settings.liveTrading?'true':'false';env.PERPS_TEST_MODE=settings.testMode?'true':'false';};
  try{const stored=secrets.readSettings();if(stored)applySettings(stored);}catch{env.LIVE_TRADING_ENABLED='false';env.SOLANA_RPC_URL='';env.JUPITER_API_KEY='';settingsStorageError='Stored connections could not be unlocked. Restore the encryption key or save them again.';}
- const connectionSettings=()=>({rpcConfigured:!!env.SOLANA_RPC_URL,jupiterKeyConfigured:!!env.JUPITER_API_KEY,liveTrading:env.LIVE_TRADING_ENABLED==='true',storageError:settingsStorageError});
+ const connectionSettings=()=>({rpcConfigured:!!env.SOLANA_RPC_URL,jupiterKeyConfigured:!!env.JUPITER_API_KEY,liveTrading:env.LIVE_TRADING_ENABLED==='true',testMode:env.PERPS_TEST_MODE==='true',storageError:settingsStorageError});
  const sessions=new Map();let loginWindow=Date.now(),loginAttempts=0,previewInFlight=false;
  const config=async()=>JSON.parse((await readVault(owner,db)).state).config;
  const logs=adminLogs(sqlite,env);logs.write('info','server','Server started. Admin diagnostics ready.');
@@ -119,13 +119,13 @@ export async function createApp(options={}){
     if(!requirePost())return;
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
     const input=JSON.parse(await body(req,4096));
-    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['rpcUrl','jupiterKey','clearJupiterKey','liveTrading'].includes(k))||typeof input.liveTrading!=='boolean'||input.clearJupiterKey!==undefined&&typeof input.clearJupiterKey!=='boolean'||input.rpcUrl!==undefined&&(typeof input.rpcUrl!=='string'||input.rpcUrl.length>2048)||input.jupiterKey!==undefined&&(typeof input.jupiterKey!=='string'||input.jupiterKey.length>512||/[\r\n]/.test(input.jupiterKey)))return send(400,{error:'Invalid connection settings.'});
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['rpcUrl','jupiterKey','clearJupiterKey','liveTrading','testMode'].includes(k))||typeof input.liveTrading!=='boolean'||input.testMode!==undefined&&typeof input.testMode!=='boolean'||input.clearJupiterKey!==undefined&&typeof input.clearJupiterKey!=='boolean'||input.rpcUrl!==undefined&&(typeof input.rpcUrl!=='string'||input.rpcUrl.length>2048)||input.jupiterKey!==undefined&&(typeof input.jupiterKey!=='string'||input.jupiterKey.length>512||/[\r\n]/.test(input.jupiterKey)))return send(400,{error:'Invalid connection settings.'});
     if(!(expectedOrigin.startsWith('https:')||env.RAILWAY_ENVIRONMENT_ID||['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)&&/^127\.0\.0\.1:\d+$/.test(req.headers.host||'')))return send(400,{error:'Save connections over HTTPS or local loopback.'});
     if(!env.DATA_DIR)return send(503,{error:'Attach a persistent volume and set DATA_DIR once in Railway.'});
-    const next={rpcUrl:input.rpcUrl?.trim()||env.SOLANA_RPC_URL||'',jupiterKey:input.clearJupiterKey?'':input.jupiterKey?.trim()||env.JUPITER_API_KEY||'',liveTrading:input.liveTrading};
+    const next={rpcUrl:input.rpcUrl?.trim()||env.SOLANA_RPC_URL||'',jupiterKey:input.clearJupiterKey?'':input.jupiterKey?.trim()||env.JUPITER_API_KEY||'',liveTrading:input.liveTrading,testMode:input.testMode??(env.PERPS_TEST_MODE==='true')};
     if(next.rpcUrl){try{const rpcUrl=new URL(next.rpcUrl);if(rpcUrl.protocol!=='https:'||rpcUrl.username||rpcUrl.password||rpcUrl.hash)throw Error();}catch{return send(422,{error:'Enter a valid HTTPS Solana RPC URL without embedded username or password.'});}}
     if(next.liveTrading&&!next.rpcUrl)return send(422,{error:'Save a Solana mainnet RPC URL before allowing live trading.'});
-    if(setupBusy||((next.rpcUrl!==(env.SOLANA_RPC_URL||'')||next.jupiterKey!==(env.JUPITER_API_KEY||''))&&(live.journal.active()||live.hasUnsettledCycle())))return send(409,{error:'Finish the current cycle before replacing connections. You can still disable live trading.'});
+    if(setupBusy||((next.testMode!==(env.PERPS_TEST_MODE==='true')||next.rpcUrl!==(env.SOLANA_RPC_URL||'')||next.jupiterKey!==(env.JUPITER_API_KEY||''))&&(live.journal.active()||live.hasUnsettledCycle())))return send(409,{error:'Finish the current cycle before replacing connections. You can still disable live trading.'});
     setupBusy=true;live.journal.pause(true);
     try{secrets.saveSettings(next);applySettings(next);settingsStorageError='';logs.write('info','settings','Connections saved; automation paused.');return send(200,{ok:true,...connectionSettings()});}catch{return send(503,{error:'Connections could not be saved securely. Check persistent storage and the encryption key.'});}finally{setupBusy=false;}
    }
@@ -154,7 +154,7 @@ export async function createApp(options={}){
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
     if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Wait for the current cycle, buyback or settings save to finish.'});
     const input=JSON.parse(await body(req,4096));
-    if(!input||Object.keys(input).some(k=>!['tokenMint','privateKey','cycleSeconds'].includes(k))||typeof input.tokenMint!=='string'||!isPublicKey(input.tokenMint)||!Number.isInteger(input.cycleSeconds)||input.cycleSeconds<10||input.cycleSeconds>86400||input.privateKey!==undefined&&(typeof input.privateKey!=='string'||input.privateKey.length>512))return send(400,{error:'Enter a valid token CA, a cycle interval of 10–86400 seconds, and a valid developer key.'});
+    if(!input||Object.keys(input).some(k=>!['tokenMint','privateKey','cycleSeconds'].includes(k))||typeof input.tokenMint!=='string'||!(isPublicKey(input.tokenMint)||input.tokenMint===''&&env.PERPS_TEST_MODE==='true')||!Number.isInteger(input.cycleSeconds)||input.cycleSeconds<10||input.cycleSeconds>86400||input.privateKey!==undefined&&(typeof input.privateKey!=='string'||input.privateKey.length>512))return send(400,{error:'Enter a valid token CA, a cycle interval of 10–86400 seconds, and a valid developer key.'});
     if(input.privateKey&&!(expectedOrigin.startsWith('https:')||env.RAILWAY_ENVIRONMENT_ID||['127.0.0.1','localhost','[::1]'].includes(url.hostname)&&req.headers.host?.startsWith('127.0.0.1:')))return send(400,{error:'Private keys can only be saved over HTTPS or a local loopback connection.'});
     if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Finish the current cycle before changing setup.'});
     setupBusy=true;live.journal.pause(true);
@@ -187,7 +187,7 @@ export async function createApp(options={}){
    }
    if(url.pathname==='/api/vault'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
-    const decorate=state=>({...publicState(state,!!env.KEEPER_SECRET),owner,authProvider:'password',storagePersistent:!!env.DATA_DIR,developerWallet:developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,state.config.vault,state.config.creator),walletStorageError});
+    const decorate=state=>({...publicState(state,!!env.KEEPER_SECRET),owner,authProvider:'password',storagePersistent:!!env.DATA_DIR,developerWallet:developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,state.config.vault,state.config.creator),walletStorageError,testMode:env.PERPS_TEST_MODE==='true'});
     if(req.method==='GET')return send(200,decorate(JSON.parse((await readVault(owner,db)).state)));
     if(!requirePost())return;
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});

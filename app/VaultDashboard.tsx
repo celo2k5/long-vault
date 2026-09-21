@@ -9,7 +9,7 @@ import {StrategySettings} from './StrategySettings';
 import {LiveTrading} from './LiveTrading';
 import {defaults,type Config} from '@/lib/engine';
 import type {WalletStatus} from '@/lib/dev-wallet';
-type View={authProvider?:string;config:Config;developerWallet?:WalletStatus;walletStorageError?:string;storagePersistent?:boolean;trading?:{enabled:boolean;paused:boolean;phase?:string;nextAt?:number}};
+type View={testMode?:boolean;authProvider?:string;config:Config;developerWallet?:WalletStatus;walletStorageError?:string;storagePersistent?:boolean;trading?:{enabled:boolean;paused:boolean;phase?:string;nextAt?:number}};
 export default function VaultDashboard({view='overview'}:{view?:'overview'|'admin'}){
  const admin=view==='admin';
  const [data,setData]=useState<View|null>(null),[ca,setCa]=useState(''),[key,setKey]=useState(''),[cycle,setCycle]=useState(120),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -24,7 +24,7 @@ export default function VaultDashboard({view='overview'}:{view?:'overview'|'admi
  {error&&<p role="alert" className="error-box">{error} {admin&&<a href="/admin/login">Sign in</a>}</p>}
  {!admin&&<MainnetOverview config={config} copy={copy} trading={data?.trading}/>}
  {admin&&<div className="admin-content"><form onSubmit={e=>{e.preventDefault();void save();}}><section className="panel settings-section"><h2>Setup</h2><div className="field-grid">
- <label>$LONG token CA<input required autoComplete="off" spellCheck={false} value={ca} placeholder="Token contract address" onChange={e=>setCa(e.target.value)}/><small>Updates the public website and identifies the fee creator.</small></label>
+ <label>$LONG token CA{data?.testMode?' (optional in test mode)':''}<input required={!data?.testMode} autoComplete="off" spellCheck={false} value={ca} placeholder="Token contract address" onChange={e=>setCa(e.target.value)}/><small>Updates the public website and identifies the fee creator.</small></label>
  <label>Developer wallet private key<input type="password" disabled={data?.authProvider!=='password'} autoComplete="new-password" spellCheck={false} maxLength={512} value={key} required={!data?.developerWallet?.publicKey} placeholder={data?.developerWallet?.publicKey?'Wallet saved · leave blank to keep':'Base58 key or JSON byte array'} onChange={e=>setKey(e.target.value)}/><small>Encrypted on the server. Never displayed again. This wallet claims the fees and funds the longs.</small></label>
  <label>Cycle interval (seconds)<input required type="number" min={10} max={86400} step={1} value={Number.isFinite(cycle)?cycle:''} onChange={e=>setCycle(e.target.value===''?NaN:Number(e.target.value))}/><small>Wait after a completed cycle before starting the next.</small></label></div>
  {data?.developerWallet?.publicKey&&<p className="admin-note">Developer wallet <code>{data.developerWallet.publicKey}</code></p>}{data?.walletStorageError&&<p role="alert" className="negative">{data.walletStorageError}</p>}{data?.storagePersistent===false&&<p className="negative">Attach a Railway volume and set DATA_DIR=/data to save the wallet.</p>}

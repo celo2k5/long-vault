@@ -40,6 +40,12 @@ The private key is submitted only to the authenticated, same-origin setup endpoi
 
 Prefer `WALLET_ENCRYPTION_KEY` in Railway Variables. If omitted, the server creates `DATA_DIR/.wallet-encryption-key` with owner-only permissions. Back it up separately from SQLite; losing it makes the stored wallet unreadable. Keeping key and ciphertext on the same volume protects against database-only disclosure, not compromise of the host or complete volume. A server compromise can access a hot wallet. Do not use public environment variable prefixes. `DEV_WALLET_PRIVATE_KEY` remains supported as a server-secret fallback when no wallet is saved through Admin. An encrypted saved wallet takes precedence.
 
+## Test positions without a token
+
+In Admin → Connections, enable **Position test mode** and allow live trading, then save. In Setup, save a developer wallet with the token CA blank. Fund its USDC associated account with at least $10 USDC per position and keep at least 0.04 SOL for fees/rent. Review leverage and TP/SL in Strategy, then click **Enable position tests** and manually open BTC, ETH or SOL.
+
+These are real mainnet positions, not simulated trades. Each open forces exactly $10 USDC collateral, regardless of caller-supplied amounts; the normal notional cap and quote/liquidation checks still apply. Test mode does not claim rewards, buy back tokens, or start automatic cycles. Manual closes and on-chain TP/SL remain available. Close and reconcile test positions before switching modes or changing wallet/connection settings. After returning to normal mode, a valid CA and verified fee creator are required again.
+
 ## Cycle behavior
 
 The production server runs a durable cycle worker every ten seconds; no browser or separate keeper process is required. One cycle at a time:

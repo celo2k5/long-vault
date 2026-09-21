@@ -55,8 +55,8 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  sqlite.prepare("UPDATE live_orders SET status='failed',message='Preparation interrupted before signing; safe to submit a new command',updated=? WHERE status='preparing'").run(Date.now());
  sqlite.exec("CREATE TABLE IF NOT EXISTS close_receipts (signature TEXT NOT NULL, request TEXT NOT NULL, cycle TEXT NOT NULL, amount TEXT NOT NULL, PRIMARY KEY(signature,request));");
  let reconciling=false,cycling=false,closed=false;
- function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Allow live trading in Admin → Connections to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Save a Solana mainnet RPC URL in Admin → Connections.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(!c.tokenMint)missing.push('Save the token CA.');return missing;}
- async function status(){const c=await config();return {enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
+ function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Allow live trading in Admin → Connections to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Save a Solana mainnet RPC URL in Admin → Connections.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(env.PERPS_TEST_MODE!=='true'&&!c.tokenMint)missing.push('Save the token CA.');return missing;}
+ async function status(){const c=await config();return {testMode:env.PERPS_TEST_MODE==='true',testCollateralUsd:10,enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
  async function verifiedConnection(){const connection=rpc();if(await connection.getGenesisHash()!==MAINNET_GENESIS)fail('Live perpetuals require a verified Solana mainnet RPC.');return connection;}
  async function prepare(action,c){
   validateConfig(c);const connection=await verifiedConnection();
@@ -172,7 +172,9 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   }finally{reconciling=false;}
  }
  async function execute(action,id,internal=false){
-  const c=await config();if(action.kind==='pause'){journal.pause(true);return status();}
+  const c=await config();if(env.PERPS_TEST_MODE==='true'&&['claim','buyback'].includes(action.kind))fail('Claims and buybacks are disabled in position test mode.');
+  if(env.PERPS_TEST_MODE==='true'&&action.kind==='open')action={...action,inputToken:'USDC',budget:10000000};
+  if(action.kind==='pause'){journal.pause(true);return status();}
   if(action.kind==='resume'){const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({...cycle(),phase:cycle().resumePhase||'watching',message:undefined,nextAt:0});journal.pause(false);return status();}
   if(!['open','close','claim',...(internal?['buyback']:[])].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');
   const missing=reasons(c);if(missing.length)fail(missing.join(' '));
@@ -188,6 +190,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(closed||fingerprint(await config())!==fingerprint(c)||action.kind!=='close'&&journal.paused())fail('Settings or pause state changed during preparation.');
    const wallet=loadDeveloperWallet(env.DEV_WALLET_PRIVATE_KEY);if(wallet.publicKey.toBase58()!==c.vault)fail('Signing wallet differs from the vault.');
    if(action.kind==='buyback')prepared.expected.cycle=action.cycle;
+   if(action.kind==='open'&&env.PERPS_TEST_MODE==='true')prepared.expected.testMode=true;
    prepared.tx.sign([wallet]);
    journal.signed(id,{expected:prepared.expected,wire:Buffer.from(prepared.tx.serialize()).toString('base64'),signature:base58(prepared.tx.signatures[0]),lastHeight:prepared.lastHeight});
   }catch(e){journal.update(id,'failed',safeError(e),'preparing');return status();}
@@ -201,6 +204,15 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   if(cycling||closed||journal.paused()||journal.active())return;cycling=true;
   try{
    const c=await config();if(reasons(c).length)return;let state=cycle();
+   if(env.PERPS_TEST_MODE==='true'){
+    const connection=await verifiedConnection();
+    for(const row of sqlite.prepare("SELECT * FROM live_orders WHERE kind='open' AND status='filled' AND expected IS NOT NULL").all()){
+     const expected=JSON.parse(row.expected);if(!expected.testMode||expected.owner!==c.vault)continue;
+     if(chainSize(await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),c.vault,expected.market)===0n)journal.update(row.id,'settled','Test position closed on-chain. Proceeds remain in the wallet; no buyback.');
+    }
+    return; // Test mode never claims, buys back, or automatically opens another position.
+   }
+
    if(state.phase==='error')return;
    if(state.owner&&(state.owner!==c.vault||state.mint!==c.tokenMint))fail('Cycle wallet or token changed. Restore the original configuration before settling profit.');
    if(state.phase==='watching'&&state.profit){
@@ -297,5 +309,5 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   await execute({kind:'buyback',market:'SOL',amount:String(amount),cycle:state.id},id,true);return true;
  }
  const timer=setInterval(()=>void reconcile().then(()=>advanceCycle()),10000);timer.unref();
- return {status,execute,reconcile,advanceCycle,journal,hasUnsettledCycle(){return !!cycle().profit&&cycle().phase!=='idle';},resetCycle(){if(cycle().profit&&cycle().phase!=='idle')fail('Finish the current cycle and buyback before changing setup.');setCycle({phase:'idle',nextAt:0});},close(){closed=true;clearInterval(timer);},safeError};
+ return {status,execute,reconcile,advanceCycle,journal,hasUnsettledCycle(){return !!cycle().profit&&cycle().phase!=='idle'||sqlite.prepare("SELECT expected FROM live_orders WHERE kind='open' AND status='filled' AND expected IS NOT NULL").all().some(r=>JSON.parse(r.expected).testMode);},resetCycle(){if(cycle().profit&&cycle().phase!=='idle')fail('Finish the current cycle and buyback before changing setup.');setCycle({phase:'idle',nextAt:0});},close(){closed=true;clearInterval(timer);},safeError};
 }
