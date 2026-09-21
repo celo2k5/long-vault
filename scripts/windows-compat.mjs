@@ -7,3 +7,7 @@ const original=cp.exec;
 cp.exec=function(command,...args){try{return original.call(this,command,...args);}catch(error){if(command!=='net use')throw error;const callback=args.findLast(x=>typeof x==='function');if(callback)queueMicrotask(()=>callback(error,'',''));return undefined;}};
 syncBuiltinESMExports();
 
+
+// Keep errors visible; avoid esbuild-based formatting of informational proxy warnings.
+process.env.WRANGLER_LOG ??= 'error';
+

@@ -17,7 +17,7 @@ createServer(async(req,res)=>{const send=(status,data)=>{res.writeHead(status,{'
 try{
  if(req.headers.host!=='127.0.0.1:5173')return send(403,{error:'Loopback host required'});
  const url=new URL(req.url,host);
- if(url.pathname==='/signin-with-chatgpt'){const token=randomUUID();sessions.add(token);res.writeHead(302,{'Location':'/','Set-Cookie':'tek_local='+token+'; HttpOnly; SameSite=Strict; Path=/'});return res.end();}
+ if(url.pathname==='/signin-with-chatgpt'){const token=randomUUID();sessions.add(token);res.writeHead(302,{'Location':url.searchParams.get('return_to')==='/admin'?'/admin':'/','Set-Cookie':'tek_local='+token+'; HttpOnly; SameSite=Strict; Path=/'});return res.end();}
  if(url.pathname==='/api/vault'){
  const cookie=(req.headers.cookie||'').split(';').map(s=>s.trim()).find(s=>s.startsWith('tek_local='))?.slice(10);
  if(!sessions.has(cookie))return send(401,{error:'Sign in to your local simulated vault.'});
@@ -28,7 +28,7 @@ try{
  const a=JSON.parse(body);if(!['tick','claim','buyback','close','pause','resume','configure'].includes(a.type)||a.market&&!['BTC','ETH','SOL'].includes(a.market))return send(400,{error:'Invalid action'});
  const r=await command('local_mock_admin',a,req.headers['idempotency-key']||'',db);return send(r.error?422:200,{...publicState(r.state),owner:'local_mock_admin',error:r.error});
  }
- const file=resolve(root,'.'+(url.pathname==='/'?'/portable/index.html':decodeURIComponent(url.pathname)));
+ const file=resolve(root,'.'+((url.pathname==='/'||url.pathname==='/admin')?'/portable/index.html':decodeURIComponent(url.pathname)));
  if(!file.startsWith(root+'/')&&!file.startsWith(root+'\\'))return send(403,{error:'Invalid path'});
  if(!existsSync(file))return send(404,{error:'Not found'});
  const mime={'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'};

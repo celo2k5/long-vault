@@ -3,7 +3,7 @@
 A simulation-first creator-reward automation application. No token is created and no blockchain transactions are sent by this version. The mock engine models dollar-denominated collateral; it is NOT a price-accurate model of Jupiter's asset-collateralized long positions. All prices, rewards, signatures and fills shown in mock mode are simulated.
 
 ## Components
-- `app/page.tsx`: responsive dashboard and configuration UI; no signing keys.
+- `app/VaultDashboard.tsx`: shared responsive interface. `/` shows the vault; `/admin` contains controls, configuration and activity. No signing keys.
 - `app/api/vault/route.ts`: authenticated, same-origin admin API.
 - `app/api/keeper/route.ts`: server-to-server keeper endpoint protected by a high-entropy bearer secret.
 - `lib/engine.ts`: pure deterministic simulation state machine, integer USD cents, profit ledger, TP/SL, pause and cooldown.
