@@ -31,8 +31,8 @@ try{
  const file=resolve(root,'.'+((url.pathname==='/'||url.pathname==='/admin')?'/portable/index.html':decodeURIComponent(url.pathname)));
  if(!file.startsWith(root+'/')&&!file.startsWith(root+'\\'))return send(403,{error:'Invalid path'});
  if(!existsSync(file))return send(404,{error:'Not found'});
- const mime={'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'};
+ const mime={'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png'};
  res.writeHead(200,{'Content-Type':mime[extname(file)]||'application/octet-stream','X-Content-Type-Options':'nosniff'});res.end(readFileSync(file));
 }catch(e){console.error(e.message);send(500,{error:'Local mock request failed.'});}
-}).listen(5173,'127.0.0.1',()=>console.log('TEK local simulation: '+host));
+}).listen(5173,'127.0.0.1',()=>console.log('LONG local simulation: '+host));
 

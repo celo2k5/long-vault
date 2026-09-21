@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "TEK Vault | Creator rewards automation",
+  title: "LONG Vault | Creator rewards automation",
   description: "Creator rewards, controlled perpetual exposure and token buybacks. Simulation-first vault console.",
   other: {
     "codex-preview": "development",
   },
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/long-pfp.png",
+    shortcut: "/long-pfp.png",
   },
 };
 

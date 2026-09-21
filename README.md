@@ -1,4 +1,4 @@
-# TEK Vault
+# LONG Vault
 
 A simulation-first creator-reward automation application. No token is created and no blockchain transactions are sent by this version. The mock engine models dollar-denominated collateral; it is NOT a price-accurate model of Jupiter's asset-collateralized long positions. All prices, rewards, signatures and fills shown in mock mode are simulated.
 
