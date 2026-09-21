@@ -30,9 +30,9 @@ test('Railway server serves visitors, authenticates admin, persists CA, and reje
   const command={method:'POST',headers,body:JSON.stringify({type:'configure',config})};
   assert.equal((await request('/api/vault',{...command,headers:{...headers,Origin:'https://evil.example'}})).status,403);
   assert.equal((await request('/api/vault',command)).status,200);assert.equal((await request('/api/vault',command)).status,200);
-  const publicValue=await(await request('/api/public')).json();assert.equal(publicValue.config.tokenMint,config.tokenMint);assert.deepEqual(publicValue.events,[]);assert.equal(JSON.stringify(publicValue).includes(password),false);
+  const publicValue=await(await request('/api/public')).json();assert.equal(publicValue.config.tokenMint,config.tokenMint);assert.deepEqual(publicValue.events,[]);assert.equal(publicValue.config.dataSource,'mainnet');assert.equal('ready' in publicValue,false);assert.equal('positions' in publicValue,false);assert.equal(JSON.stringify(publicValue).includes(password),false);
   assert.equal((await request('/api/keeper',{method:'POST'})).status,401);
-  assert.equal((await request('/api/keeper',{method:'POST',headers:{Authorization:'Bearer '+keeper,'Idempotency-Key':randomUUID()}})).status,200);
+  assert.equal((await request('/api/keeper',{method:'POST',headers:{Authorization:'Bearer '+keeper,'Idempotency-Key':randomUUID()}})).status,422);
   const monitoring={...config,dataSource:'mainnet'};
   assert.equal((await request('/api/vault',{method:'POST',headers:{...headers,'Idempotency-Key':randomUUID()},body:JSON.stringify({type:'configure',config:monitoring})})).status,200);
   const noTrade=await request('/api/vault',{method:'POST',headers:{...headers,'Idempotency-Key':randomUUID()},body:JSON.stringify({type:'claim'})});assert.equal(noTrade.status,422);assert.match((await noTrade.json()).error,/read-only/);

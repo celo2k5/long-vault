@@ -1,6 +1,6 @@
 # LONG Vault
 
-$LONG dashboard, admin settings and simulation keeper, with real mainnet reads and unsigned protocol previews. **No real transaction is signed or broadcast by this build.** Entering a CA updates the website; an address alone cannot authorize spending.
+$LONG dashboard, admin settings and mainnet monitoring, with real mainnet reads and unsigned protocol previews. **No real transaction is signed or broadcast by this build.** Entering a CA updates the website; an address alone cannot authorize spending.
 
 ## Deploy to Railway
 
@@ -11,7 +11,7 @@ The repository now includes railway.json. The previous start command ran a local
 3. Set PUBLIC_ORIGIN=https://longcoin.lol (or your actual public origin, without a path).
 4. Set ADMIN_PASSWORD to a unique random password of at least 20 characters in Railway Variables. Never commit it or paste it into chat. Without it, the public page still loads and Admin stays locked.
 5. Attach a Railway volume at /data and set DATA_DIR=/data. Use one replica. SQLite settings and activity persist on that volume. Without a volume, container replacement loses local data; DATA_DIR alone does not create a volume.
-6. Keep TRADING_MODE=mock. Mainnet monitoring is a separate Admin setting; it does not enable trading.
+6. Keep TRADING_MODE=mock. The website always uses mainnet data. No setting enables trading.
 7. Health check: /health. Let Railway provide PORT; remove any old domain target port of 8787, or match the target to the configured PORT.
 8. Redeploy. Open /admin, sign in, enter the token contract and public addresses, then Save configuration. Visitors see the saved CA, copy action and Solscan link within five seconds.
 
@@ -34,7 +34,7 @@ Cloudflare/Sites remains a separate target: npm run build:sites and npm run star
 
 ## Mainnet monitoring and previews
 
-Save the CA and vault in Admin, configure SOLANA_RPC_URL in server secrets, and choose Mainnet monitoring under Dashboard data. Save again. The public page then shows chain data instead of simulated balances. Missing or failed reads are displayed as unavailable, never zero or mock fallback.
+Save the CA and vault in Admin and configure SOLANA_RPC_URL in server secrets. The public page uses only mainnet data, with no simulation selector or public admin link. Open /admin directly to manage settings. Missing or failed reads are displayed as unavailable, never zero or mock fallback.
 
 - The official Pump SDK 2.0.0 discovers the on-chain creator from the CA and reads SOL creator fees across Pump and PumpSwap. The optional creator address verifies the discovered identity. Fees are pooled by creator wallet, so they can include other coins belonging to that creator.
 - This adapter only supports SOL-paired single-creator coins. Shared fee distributions, holder rewards and other quote currencies fail closed. A different creator and vault wallet requires an authorized routing transfer; merely entering the vault address does not redirect fees.
@@ -44,11 +44,11 @@ Save the CA and vault in Admin, configure SOLANA_RPC_URL in server secrets, and 
 - Preview TP/SL trigger prices approximate the configured ROE before fees. Previews do not decode and authorize every instruction for signing. They are not proof of executable fills. No signed transaction bytes or signing service exist in this build.
 - Connection reads retry transient failures with bounded timeouts. Checks share an in-flight request and a short cache. RPC errors are sanitized; credentials are not returned to the browser.
 
-Mainnet monitoring disables all simulated economic actions. Historical simulation events remain clearly labeled in Admin. It does **not** automatically close real positions, claim real fees or buy back tokens. Manage existing real positions in Jupiter until the execution integration is complete.
+All simulated economic actions are disabled for application-created vaults. Existing mock balances, positions, receipts and activity are retired once while preserving addresses and strategy settings. Public endpoints contain no simulated balances. Admin shows only actual settings changes. It does **not** automatically close real positions, claim real fees or buy back tokens. Manage existing real positions in Jupiter until the execution integration is complete.
 
 The pinned Pump package's ESM dependency currently has an Anchor CommonJS export incompatibility. The Node adapter imports the pinned CJS distribution. The Sites build resolves Anchor's browser-compatible RPC implementation. Keep these compatibility choices covered when upgrading dependencies.
 
-## Simulation behavior
+## Offline engine tests only
 
 - Default leverage is 5x; application range 1–100x. This is an app limit, not a promise of protocol availability.
 - Allocations total 100%. The per-market position cap is notional USD, not collateral.
@@ -60,9 +60,9 @@ The pinned Pump package's ESM dependency currently has an Anchor CommonJS export
 
 ## Keeper and durability
 
-The keeper is for simulation only. Set the same random KEEPER_SECRET of at least 32 characters on the Node server and keeper process. Set KEEPER_BASE_URL to the website origin and run node --env-file=.env.local scripts/keeper.mjs on an always-on worker. The browser does not run the keeper. On Railway, VAULT_OWNER_ID defaults to long_vault_admin; changing it selects a different stored vault.
+The keeper cannot execute live trades and cannot add mock data to the website. The offline simulation engine is retained only for isolated unit tests. Set the same random KEEPER_SECRET of at least 32 characters on the Node server and keeper process. Set KEEPER_BASE_URL to the website origin and run node --env-file=.env.local scripts/keeper.mjs on an always-on worker. The browser does not run the keeper. On Railway, VAULT_OWNER_ID defaults to long_vault_admin; changing it selects a different stored vault.
 
-Commands carry persistent idempotency receipts and commit through an atomic compare-and-swap with a per-attempt fence. Duplicate runs cannot double-open simulated positions. Activity and receipts survive restarts. The UI shows the latest 200 events. These guarantees apply to the database simulation; they do not make blockchain writes atomic.
+Commands carry persistent idempotency receipts and commit through an atomic compare-and-swap with a per-attempt fence. Duplicate runs cannot double-open simulated positions. Activity and receipts survive restarts. The UI shows real configuration changes only. These guarantees apply to the database simulation; they do not make blockchain writes atomic.
 
 ## What remains before real execution
 
@@ -85,4 +85,4 @@ Tests cover the simulation engine, concurrent keeper requests and durable receip
 - [Jupiter perpetuals command documentation](https://github.com/jup-ag/cli/blob/main/docs/perps.md)
 - [Railway port binding](https://docs.railway.com/networking/troubleshooting/application-failed-to-respond)
 - [Railway health checks](https://docs.railway.com/deployments/healthchecks)
-- BTC/ETH/SOL SVG paths: cryptocurrency-icons, license in public/coins/LICENSE.md. Solana presentation uses its black and gradient colors. PFP is the supplied original image; accent #2DD409. The reference dashboard inspired the layout without a pixel-for-pixel copy.
+- BTC/ETH SVG paths: cryptocurrency-icons, license in public/coins/LICENSE.md. Solana uses its three-bar mark on black with its green/purple gradient (solana.svg). PFP is the supplied original image; accent #2DD409. The reference dashboard inspired the layout without a pixel-for-pixel copy.
