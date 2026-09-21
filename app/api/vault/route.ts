@@ -7,8 +7,10 @@ const db=()=> (env as unknown as {DB:D1Database}).DB;
 const keeper=()=>Boolean((env as unknown as {KEEPER_SECRET?:string}).KEEPER_SECRET);
 const reply=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 function mode(){if((env as unknown as {TRADING_MODE?:string}).TRADING_MODE && (env as unknown as {TRADING_MODE?:string}).TRADING_MODE!=='mock')throw Error('Live execution is not implemented. Set TRADING_MODE=mock.');}
-export async function GET(){const user=await getChatGPTUser();if(!user)return reply({error:'Sign in to open your vault.'},401);try{mode();const row=await readVault(user.userId,db());return reply({...publicState(JSON.parse(row.state),keeper()),owner:user.userId});}catch{return reply({error:'Vault unavailable. Check storage and server mode configuration.'},503);}}
+const authorized=(id:string)=>!(env as unknown as {VAULT_OWNER_ID?:string}).VAULT_OWNER_ID||(env as unknown as {VAULT_OWNER_ID?:string}).VAULT_OWNER_ID===id;
+export async function GET(){const user=await getChatGPTUser();if(!user)return reply({error:'Sign in to open your vault.'},401);if(!authorized(user.userId))return reply({error:'Only the configured vault administrator can open Admin.'},403);try{mode();const row=await readVault(user.userId,db());return reply({...publicState(JSON.parse(row.state),keeper()),owner:user.userId});}catch{return reply({error:'Vault unavailable. Check storage and server mode configuration.'},503);}}
 export async function POST(request:Request){const user=await getChatGPTUser();if(!user)return reply({error:'Sign in required.'},401);
+ if(!authorized(user.userId))return reply({error:'Only the configured vault administrator can change this vault.'},403);
  const origin=request.headers.get('origin');if(origin!==new URL(request.url).origin)return reply({error:'Same-origin requests only.'},403);
  if(!request.headers.get('content-type')?.startsWith('application/json'))return reply({error:'JSON required.'},415);
  try{mode();const raw=await request.text();if(raw.length>8192)return reply({error:'Request too large.'},413);const action=JSON.parse(raw) as Action;

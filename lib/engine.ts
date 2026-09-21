@@ -1,6 +1,7 @@
+import {isPublicKey} from './address.ts';
 export const MARKETS = ['BTC','ETH','SOL'] as const;
 export type Market = typeof MARKETS[number];
-export type Config = { leverage:number; allocation:Record<Market,number>; minRewardUsd:number; takeProfit:number; stopLoss:number; maxPositionUsd:number; slippageBps:number; cooldownSeconds:number; buybackPercent:number; treasury:string; vault:string; tokenMint:string; rpcEnv:string; jupiterEnv:string };
+export type Config = { leverage:number; allocation:Record<Market,number>; minRewardUsd:number; takeProfit:number; stopLoss:number; maxPositionUsd:number; slippageBps:number; cooldownSeconds:number; buybackPercent:number; treasury:string; vault:string; tokenMint:string; rpcEnv:string; jupiterEnv:string; creator?:string; dataSource?:'mock'|'mainnet' };
 export const defaults:Config={leverage:5,allocation:{BTC:40,ETH:30,SOL:30},minRewardUsd:100,takeProfit:100,stopLoss:25,maxPositionUsd:1000,slippageBps:50,cooldownSeconds:120,buybackPercent:75,treasury:'',vault:'',tokenMint:'',rpcEnv:'SOLANA_RPC_URL',jupiterEnv:'JUPITER_API_URL'};
 export type Position={market:Market;collateral:number;notional:number;entry:number;mark:number;leverage:number;tp:number;sl:number;liquidation:number;status:'open'|'closed'|'liquidated';pnl:number;roe:number;history:number[];openedAt:number};
 export type Event={id:string;time:number;kind:string;detail:string;amount:number;signature:string|null;status:'confirmed'|'failed'};
@@ -14,7 +15,9 @@ export function validateConfig(c:Config):void {
  for(const [key,[lo,hi]] of Object.entries(ranges)){const n=c[key as keyof Config];if(!finite(n)||(n as number)<lo||(n as number)>hi)throw Error(key+' must be between '+lo+' and '+hi+'.');}
  if(!Number.isInteger(c.slippageBps)||!Number.isInteger(c.cooldownSeconds))throw Error('Slippage and cooldown must be whole numbers.');
  if(MARKETS.some(m=>!finite(c.allocation[m])||c.allocation[m]<0||c.allocation[m]>100)||Math.abs(MARKETS.reduce((n,m)=>n+c.allocation[m],0)-100)>0.000001)throw Error('BTC, ETH and SOL allocations must total 100%.');
- for(const key of ['treasury','vault','tokenMint'] as const)if(typeof c[key]!=='string'||(c[key]&&!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(c[key])))throw Error(key+' must be a Solana base58 address or empty in mock mode.');
+ for(const key of ['treasury','vault','tokenMint'] as const)if(typeof c[key]!=='string'||(c[key]&&!isPublicKey(c[key])))throw Error(key+' must be a 32-byte Solana public address.');
+ if(c.creator!==undefined&&c.creator!==''&&!isPublicKey(c.creator))throw Error('Creator must be a Solana public address.');
+ if(c.dataSource!==undefined&&!['mock','mainnet'].includes(c.dataSource))throw Error('Invalid data source.');
  if(c.rpcEnv!=='SOLANA_RPC_URL'||c.jupiterEnv!=='JUPITER_API_URL')throw Error('Use the approved server environment references. Never paste secrets into settings.');
 }
 export function mockMarks(now:number):Record<Market,number>{const t=now/60000;return {BTC:Math.round(84000*(1+.022*Math.sin(t*.8))),ETH:Math.round(2800*(1+.026*Math.sin(t*.67+1))*100)/100,SOL:Math.round(145*(1+.035*Math.sin(t*.9+2))*100)/100};}
@@ -36,6 +39,7 @@ export function transition(input:State,action:Action,id:string,now=Date.now(),pr
  let s=structuredClone(input);let error:string|undefined;
  try{
  validateConfig(s.config);
+ if(s.config.dataSource==='mainnet'&&!['configure','pause','resume'].includes(action.type))throw Error('Mainnet monitoring is read-only. No signing authority or live execution is enabled.');
  if(MARKETS.some(m=>!finite(prices[m])||prices[m]<=0))throw Error('Invalid mark prices. No action taken.');
  if(!finite(now)||now<input.lastTick)throw Error('Clock moved backwards.');
  if(action.type==='pause'){s.paused=true;event(s,now,'Pause','Claims, opens and buybacks paused; protective closes remain enabled');}

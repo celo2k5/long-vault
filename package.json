@@ -1,5 +1,5 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "long-vault",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -8,15 +8,22 @@
   "scripts": {
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",
-    "build": "node scripts/run-framework.mjs build",
-    "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
+    "build": "node scripts/portable-build.mjs",
+    "start": "node scripts/server.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "build:sites": "node scripts/run-framework.mjs build",
+    "start:sites": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
+    "build:railway": "node scripts/portable-build.mjs",
+    "start:railway": "node scripts/server.mjs",
+    "test": "node --experimental-strip-types tests/engine.test.ts && node --experimental-strip-types tests/store.test.ts && node --experimental-strip-types tests/mainnet.test.ts && node tests/server.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
+    "@pump-fun/pump-sdk": "2.0.0",
     "@shadcn/react": "^0.3.0",
+    "@solana/web3.js": "1.98.4",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "^1.1.1",

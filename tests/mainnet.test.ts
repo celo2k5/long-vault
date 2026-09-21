@@ -1,0 +1,37 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {isPublicKey} from '../lib/address.ts';
+import {defaults,initialState,transition,validateConfig} from '../lib/engine.ts';
+import {boundedFetch,parsePositions,perpsBase,rpcConnection,MINTS} from '../lib/mainnet.ts';
+
+test('address validation rejects base58 strings with the wrong decoded length',()=>{
+ assert.equal(isPublicKey(MINTS.USDC),true);assert.equal(isPublicKey('1'.repeat(32)),true);
+ assert.equal(isPublicKey('z'.repeat(44)),false);assert.equal(isPublicKey('1'.repeat(33)),false);assert.equal(isPublicKey('0'.repeat(32)),false);
+ assert.throws(()=>validateConfig({...defaults,tokenMint:'1'.repeat(33)}));
+});
+test('mainnet monitoring cannot run the simulated economic engine',()=>{
+ const state=initialState();state.config.dataSource='mainnet';
+ for(const type of ['tick','claim','buyback','close'] as const){const result=transition(state,{type},'monitor-'+type);assert.match(result.error!,/read-only/);assert.equal(result.state.ready,state.ready);assert.equal(result.state.pending,state.pending);assert.equal(result.state.cycle,0);}
+ const result=transition(state,{type:'configure',config:{...state.config,tokenMint:MINTS.USDC}},'config-mainnet');assert.equal(result.error,undefined);assert.equal(result.state.config.tokenMint,MINTS.USDC);
+});
+test('Jupiter position units are converted from micro-USD, including losses',()=>{
+ const position={positionPubkey:MINTS.SOL,asset:'SOL',side:'long',leverage:'5',sizeUsd:'500000000',collateralUsd:'100000000',entryPriceUsd:'150000000',markPriceUsd:'149000000',liquidationPriceUsd:'125000000',pnlAfterFeesUsd:'-4300000',pnlAfterFeesPct:'-4.3',tpslRequests:[{requestType:'tp',triggerPriceUsd:'180000000'},{requestType:'sl',triggerPriceUsd:'142500000'}]};
+ const [p]=parsePositions({count:1,dataList:[position]});assert.equal(p.notionalUsd,500);assert.equal(p.mark,149);assert.equal(p.pnlUsd,-4.3);assert.equal(p.takeProfitPrice,180);assert.equal(p.stopLossPrice,142.5);
+ assert.throws(()=>parsePositions({count:2,dataList:[position]}),/Incomplete/);
+ assert.throws(()=>parsePositions({count:1,dataList:[{...position,markPriceUsd:'NaN'}]}));
+ assert.throws(()=>parsePositions({count:1,dataList:[{...position,collateralUsd:'-1'}]}));
+ assert.throws(()=>parsePositions({count:1,dataList:[{...position,sizeUsd:'999999999999999999999'}]}));
+});
+test('API destination cannot be changed to a credential exfiltration endpoint',()=>{
+ assert.equal(perpsBase({}),'https://perps-api.jup.ag/v2');assert.throws(()=>perpsBase({JUPITER_API_URL:'https://example.com'}));
+ assert.throws(()=>rpcConnection({}),/server secrets/);assert.throws(()=>rpcConnection({SOLANA_RPC_URL:'http://localhost:8899'}),/HTTPS/);
+});
+test('reads retry transient failures but never follow redirects',async()=>{
+ let attempts=0;
+ const fetcher=(async(_input:unknown,init:RequestInit)=>{assert.equal(init.redirect,'error');attempts++;return new Response('{}',{status:attempts<3?503:200});}) as typeof fetch;
+ assert.equal((await boundedFetch('https://example.com',{},fetcher)).status,200);assert.equal(attempts,3);
+ let authAttempts=0;await assert.rejects(boundedFetch('https://example.com',{},(async()=>{authAttempts++;return new Response('{}',{status:401});}) as typeof fetch),/HTTP 401/);assert.equal(authAttempts,1);
+});
+test('network errors do not disclose secret-bearing provider URLs',async()=>{
+ await assert.rejects(boundedFetch('https://example.com',{},(async()=>{throw Error('Failed https://rpc.example/?api-key=secret');}) as typeof fetch),e=>e instanceof Error&&!e.message.includes('secret')&&e.message.includes('Network'));
+});

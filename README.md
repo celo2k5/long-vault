@@ -1,93 +1,88 @@
 # LONG Vault
 
-A simulation-first creator-reward automation application. No token is created and no blockchain transactions are sent by this version. The mock engine models dollar-denominated collateral; it is NOT a price-accurate model of Jupiter's asset-collateralized long positions. All prices, rewards, signatures and fills shown in mock mode are simulated.
+$LONG dashboard, admin settings and simulation keeper, with real mainnet reads and unsigned protocol previews. **No real transaction is signed or broadcast by this build.** Entering a CA updates the website; an address alone cannot authorize spending.
 
-## Components
-- `app/VaultDashboard.tsx`: shared responsive interface. `/` shows the vault; `/admin` contains controls, configuration and activity. No signing keys.
-- `app/api/vault/route.ts`: authenticated, same-origin admin API.
-- `app/api/keeper/route.ts`: server-to-server keeper endpoint protected by a high-entropy bearer secret.
-- `lib/engine.ts`: pure deterministic simulation state machine, integer USD cents, profit ledger, TP/SL, pause and cooldown.
-- `lib/store.ts`: D1 state persistence with optimistic concurrency control. A successful compare-and-swap is the commit point. Competing runs reload and retry. All simulated effects commit together, so no double-open or double-spend occurs.
-- `lib/live.ts`: fail-closed live adapter boundary and transaction-policy validation. It intentionally cannot sign or submit.
-- `scripts/keeper.mjs`: continuously running backend keeper client. Run this separately from the frontend.
+## Deploy to Railway
 
-## Start locally
-Use Node 22.13+ and npm. Install with `npm run install:ci`, then `npm run db:generate` if changing the schema. Copy `.env.example` to `.env.local`; never commit values. Run `npm run build` to generate the local Worker configuration. Apply the generated SQL:
-```sh
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_tek_vault.sql
-npm run dev
-```
-Then apply drizzle/0001_durable_receipts.sql using the same command. Visit the printed local address. The starter's loopback-only simulated ChatGPT sign-in uses a local development identity. This auth simulation is excluded from production. Real hosted access is protected by the private Sites dispatcher.
+The repository now includes railway.json. The previous start command ran a local Cloudflare development server at 127.0.0.1:8787; Railway could not reach it. The new Node server listens on 0.0.0.0 and Railway's PORT.
 
-The dashboard requires sign-in for persisted state. Each identity owns an isolated mock vault; a user cannot read or modify another user's vault. Copy the owner ID from Configuration into the keeper's `VAULT_OWNER_ID`. Do not expose the Worker outside the trusted Sites dispatcher: authenticated headers are trustworthy only behind that boundary.
+1. Connect this repository, branch main, root directory /.
+2. Use build command npm run build:railway and start command npm run start:railway (railway.json sets both). Existing overrides of npm run build / npm start also use the Node deployment now. Remove any custom command that invokes Wrangler.
+3. Set PUBLIC_ORIGIN=https://longcoin.lol (or your actual public origin, without a path).
+4. Set ADMIN_PASSWORD to a unique random password of at least 20 characters in Railway Variables. Never commit it or paste it into chat. Without it, the public page still loads and Admin stays locked.
+5. Attach a Railway volume at /data and set DATA_DIR=/data. Use one replica. SQLite settings and activity persist on that volume. Without a volume, container replacement loses local data; DATA_DIR alone does not create a volume.
+6. Keep TRADING_MODE=mock. Mainnet monitoring is a separate Admin setting; it does not enable trading.
+7. Health check: /health. Let Railway provide PORT; remove any old domain target port of 8787, or match the target to the configured PORT.
+8. Redeploy. Open /admin, sign in, enter the token contract and public addresses, then Save configuration. Visitors see the saved CA, copy action and Solscan link within five seconds.
 
-## Configuration semantics
-- Default leverage: 5x. The app policy limits new positions to 1–100x. This is an application cap, not a claim about Jupiter's supported leverage.
-- Allocations must total 100%; zero allocation disables a market.
-- Minimum rewards and position limits are in USD for this simulator. The maximum position size is notional per market, not collateral. Excess capital remains ready to deploy.
-- TP and SL are ROE percentages on collateral. +100% ROE means a 2x equity multiple BEFORE trading costs. Existing positions retain their opening leverage, TP and SL.
-- Liquidation estimate uses a simple 0.5% maintenance assumption. Funding, fees, asset collateral price changes, price impact and oracle effects are excluded. Never use this estimate for live execution.
-- Buyback percentage reserves a fraction of positive NET cycle PnL, after all positions in that cycle close. Losses across markets offset gains. Returned principal never becomes buyback profit. Remaining profit returns to deployable capital.
-- Pause stops new claims, opens and buybacks. Price monitoring and protective closes remain active when the keeper runs. Manual close is permitted while paused. Pause is not a close-all command.
-- Configuration changes apply to the next cycle. Cooldown starts when the last position closes.
-- RPC/API settings reference server-side environment variable names, not credential-bearing URLs. Addresses are configuration only until live adapters are implemented.
-- In mock mode, an initial simulated reward balance is provided and mock rewards accrue only on keeper ticks. No blockchain balances are represented.
+The Node deployment does not use Cloudflare D1 or trust ChatGPT identity headers. It uses password-authenticated, expiring, HttpOnly/SameSite sessions, HTTPS Secure cookies, same-origin write checks, bounded requests and login rate limiting. Restarting the server clears sessions but preserves database state on the volume. The browser never receives ADMIN_PASSWORD, RPC credentials, API keys or signing keys.
 
-## Run the keeper
-Set `KEEPER_BASE_URL`, `KEEPER_SECRET`, `VAULT_OWNER_ID`, and optionally `KEEPER_INTERVAL_MS` (default 15 seconds). Configure the same `KEEPER_SECRET` as a hosted secret. Run `node --env-file=.env.local scripts/keeper.mjs` on a trusted always-on server.
+## Run locally
 
-Sites private access may require an authenticated gateway for machine requests. If the private dispatcher rejects the bearer request, run the keeper behind an approved gateway or invoke it internally; do not make the admin surface public to work around authentication. The app does not claim unattended automation is running until an external keeper is configured. The dashboard's “Run cycle” button invokes exactly the same engine for testing. Leaving the browser open is not required by the backend.
+Use Node 22.13 or later, with npm. Run npm ci, npm run build, then npm start. The production Node server defaults to port 3000. Set ADMIN_PASSWORD and PUBLIC_ORIGIN=http://localhost:3000 in your shell or an ignored .env.local file; use node --env-file=.env.local scripts/server.mjs when loading that file. A public dashboard is available without logging in.
 
-Retries reuse the same idempotency key. The database keeps processed command IDs in a separate durable receipt table; the vault state holds only the latest 200 activity records. Full activity is also persisted separately. Optimistic conflicts are retried with bounded backoff. A failed validation is recorded in activity; transport/storage failures are reported to the caller and must not be presented as successful fills.
+For the existing loopback-only preview at http://127.0.0.1:5173:
 
-## Live integration — deliberately blocked
-No environment switch enables live trading in this build. `TRADING_MODE=live` fails closed. Complete and audit adapters before adding live enablement:
-1. Verify token mint, creator authority, fee destination and whether rewards are actually claimable. Pump bonding-curve fees, PumpSwap fees and shared fees have distinct instructions. Holder-reward/cashback tokens may not pay the creator.
-2. Use the current official Pump SDK/IDL to construct fee claims; verify balances before and after confirmed execution. Convert rewards to required collateral with a validated quote, preserving a SOL gas/rent reserve.
-3. Obtain a supported Jupiter perpetual integration and current program IDs/IDL. Spot swap APIs are not perpetual-position APIs. Longs use underlying-asset collateral; use protocol position state/oracles for ROE and liquidation, not the simplified mock formula.
-4. Decode ALL proposed transaction instructions server-side. Verify allowed programs, mint, accounts, owner, destination, amount, fees, expiry, slippage, oracle freshness, leverage and notional. Reject extra signers, unexpected writable accounts and unexpected transfers. Simulate before signing. A quote response is untrusted.
-5. Use a remote signer or hardware-backed secret manager with an audited vault authority policy. Browser clients must never see key material. A treasury address alone does not enforce a policy.
-6. Persist an outbox intent and signed transaction bytes/signature BEFORE broadcast. Use an atomic lock/lease with fencing for each vault; reconcile signature status, position accounts and keeper request accounts before retry. A timeout is UNKNOWN, not FAILED. Never reconstruct and resend a new economic action until absence is proven. Database CAS alone cannot make an external chain operation atomic.
-7. Reconcile final balance deltas and actual net fees before buyback. Confirm output mint and treasury receipt. No burn is implemented or requested.
-8. Add protocol-specific tests for partial fills, asynchronous Jupiter requests, expiries, network partitions, liquidation, stale prices, multiple keepers and interrupted confirmation.
-
-## Authority model
-Recommended production design: separate operator (configuration), keeper (narrow actions), remote signer and treasury/vault authority. An audited on-chain vault/PDA or suitable policy-enforcing authority should cap spend, leverage and destinations independently of the keeper. This repository does not deploy an on-chain program and makes no claim that its off-chain rules secure a hot wallet against compromise.
-
-## Secrets
-`KEEPER_SECRET` is a random value of at least 32 characters. Do not put secrets in NEXT_PUBLIC variables, browser storage, URLs, the activity log or Git. Production secrets belong in Sites environment secret settings / your secret manager. Example RPC and API variables are reserved for future live adapters and are not used to send mock requests.
-
-## Verification
-Run `node --experimental-strip-types tests/engine.test.ts` for engine safety tests and `npx tsc --noEmit` for type checks. Build with the Sites build helper when using Sites hosting. Mock functionality is not evidence of live protocol compatibility.
-
-## Official references checked 2026-09-21
-- Pump public SDK and fee docs: https://github.com/pump-fun/pump-public-docs
-- Pump creator collection: https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/COLLECT_CREATOR_FEE.md
-- Jupiter official developer documentation: https://developers.jup.ag/
-- Jupiter support / collateral and liquidation: https://support.jup.ag/
-
-The original screenshot is used only as visual inspiration: dark surfaces, neon green, prominent ticker and three market cards.
-
-
-## Portable local preview
-If Windows prevents Cloudflare workerd from starting, run:
-```sh
+~~~sh
 node scripts/portable-build.mjs
 node scripts/portable-server.mjs
-```
-Open http://127.0.0.1:5173 and use the sign-in button to create a local mock admin session. This fallback does not perform actual ChatGPT authentication. It binds only to loopback, uses a separate persistent SQLite database, and applies both migrations automatically. It is never the production server. Stop it before starting the standard preview on the same port.
+~~~
 
-Also run `node --experimental-strip-types tests/store.test.ts` for database concurrency, replay protection and ownership tests. The Windows compatibility launcher only tolerates failure of optional network-drive discovery; it does not change security permissions. For a production build in this Windows environment:
-```sh
-node --import ./scripts/windows-compat.mjs scripts/run-framework.mjs build
-```
+This preview has a local simulated sign-in and a separate SQLite database; **never deploy the portable-server script**. Its sign-in is not production authentication.
 
-## Validation performed
-- 13 engine / quote-boundary tests passed.
-- 4 SQLite-backed persistence tests passed, including 20 concurrent duplicate requests and distinct overlapping keeper requests.
-- TypeScript checks passed; production Worker build passed.
-- Browser tested: sign-in to the local mock session, claim/open, pause, invalid allocation rejection, manual close while paused, and mobile/desktop overflow.
-- WebMCP read tool tested with valid and invalid input.
-- Local browser testing used the portable simulation server because workerd child-process pipes are unavailable in this Windows environment.
-- No live Pump, Jupiter, signer, or on-chain vault integration has been exercised or enabled.
+Cloudflare/Sites remains a separate target: npm run build:sites and npm run start:sites. Apply both SQL migrations to its D1 binding. Set VAULT_OWNER_ID to the trusted admin user ID displayed in Admin; the public endpoint reads that vault and only that account can modify it. Sites identity headers must only be accepted behind the trusted Sites dispatcher.
 
+## Mainnet monitoring and previews
+
+Save the CA and vault in Admin, configure SOLANA_RPC_URL in server secrets, and choose Mainnet monitoring under Dashboard data. Save again. The public page then shows chain data instead of simulated balances. Missing or failed reads are displayed as unavailable, never zero or mock fallback.
+
+- The official Pump SDK 2.0.0 discovers the on-chain creator from the CA and reads SOL creator fees across Pump and PumpSwap. The optional creator address verifies the discovered identity. Fees are pooled by creator wallet, so they can include other coins belonging to that creator.
+- This adapter only supports SOL-paired single-creator coins. Shared fee distributions, holder rewards and other quote currencies fail closed. A different creator and vault wallet requires an authorized routing transfer; merely entering the vault address does not redirect fees.
+- Solana mainnet genesis is checked before RPC balances are used. The vault's SOL and USDC balances are read on-chain.
+- Jupiter v2 supplies real BTC/ETH/SOL prices, positions, ROE and estimated liquidation prices. Its micro-USD amounts are validated before conversion. JUPITER_API_URL defaults to https://perps-api.jup.ag/v2 and rejects other hosts. JUPITER_API_KEY is optional where the provider allows unauthenticated reads.
+- Admin connection checks report missing dependencies. Previews construct an unsigned Pump claim or Jupiter long and call RPC simulation. They require valid addresses, a funded wallet and supported protocol responses. Orders respect the configured collateral threshold, allocation, leverage, notional and slippage bounds.
+- Preview TP/SL trigger prices approximate the configured ROE before fees. Previews do not decode and authorize every instruction for signing. They are not proof of executable fills. No signed transaction bytes or signing service exist in this build.
+- Connection reads retry transient failures with bounded timeouts. Checks share an in-flight request and a short cache. RPC errors are sanitized; credentials are not returned to the browser.
+
+Mainnet monitoring disables all simulated economic actions. Historical simulation events remain clearly labeled in Admin. It does **not** automatically close real positions, claim real fees or buy back tokens. Manage existing real positions in Jupiter until the execution integration is complete.
+
+The pinned Pump package's ESM dependency currently has an Anchor CommonJS export incompatibility. The Node adapter imports the pinned CJS distribution. The Sites build resolves Anchor's browser-compatible RPC implementation. Keep these compatibility choices covered when upgrading dependencies.
+
+## Simulation behavior
+
+- Default leverage is 5x; application range 1–100x. This is an app limit, not a promise of protocol availability.
+- Allocations total 100%. The per-market position cap is notional USD, not collateral.
+- TP/SL use collateral ROE; +100% is 2x equity before costs. Existing simulated positions keep their opening risk settings.
+- The mock liquidation formula excludes funding, real collateral behavior, oracle effects and price impact. Do not use it to trade.
+- Buybacks reserve only a share of positive net cycle PnL after all positions close; market losses offset gains and principal is excluded.
+- Pause blocks claims, opens and buybacks, while protective simulated closes can still run. Mainnet monitoring has no such automated protection.
+- Cooldown starts at the last close. Mock rewards accrue only when the keeper runs.
+
+## Keeper and durability
+
+The keeper is for simulation only. Set the same random KEEPER_SECRET of at least 32 characters on the Node server and keeper process. Set KEEPER_BASE_URL to the website origin and run node --env-file=.env.local scripts/keeper.mjs on an always-on worker. The browser does not run the keeper. On Railway, VAULT_OWNER_ID defaults to long_vault_admin; changing it selects a different stored vault.
+
+Commands carry persistent idempotency receipts and commit through an atomic compare-and-swap with a per-attempt fence. Duplicate runs cannot double-open simulated positions. Activity and receipts survive restarts. The UI shows the latest 200 events. These guarantees apply to the database simulation; they do not make blockchain writes atomic.
+
+## What remains before real execution
+
+Automated signing, transaction instruction authorization, an on-chain authority/policy, a durable transaction outbox, unknown-result reconciliation, reward conversion, actual realized-profit accounting and buyback execution are **not implemented**. TRADING_MODE=live remains blocked. A signed transaction must be journaled before broadcast and reconciled on timeout before any economic action is retried. Protocol-specific tests must cover partial execution, stale quotes, expiry, interrupted confirmations and competing keepers. No token mint or on-chain vault is created here.
+
+## Verification
+
+~~~sh
+npm run build
+npm test
+npx tsc --noEmit
+~~~
+
+Tests cover the simulation engine, concurrent keeper requests and durable receipts; strict public key and Jupiter response validation; mainnet-mode isolation; HTTP authentication, cross-origin protection, public CA updates, restart persistence and missing-secret startup. Mainnet price reads have been verified against Jupiter's real service. No live signed transactions, funded-wallet claim previews or long previews have been confirmed for this project because its addresses, RPC and signing service are not configured.
+
+## Sources and assets
+
+- [Official Pump SDK and fee instructions](https://github.com/pump-fun/pump-public-docs)
+- [Official Jupiter perpetuals CLI/API implementation](https://github.com/jup-ag/cli/blob/main/src/clients/PerpsClient.ts)
+- [Jupiter perpetuals command documentation](https://github.com/jup-ag/cli/blob/main/docs/perps.md)
+- [Railway port binding](https://docs.railway.com/networking/troubleshooting/application-failed-to-respond)
+- [Railway health checks](https://docs.railway.com/deployments/healthchecks)
+- BTC/ETH/SOL SVG paths: cryptocurrency-icons, license in public/coins/LICENSE.md. Solana presentation uses its black and gradient colors. PFP is the supplied original image; accent #2DD409. The reference dashboard inspired the layout without a pixel-for-pixel copy.
