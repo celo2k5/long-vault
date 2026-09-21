@@ -51,3 +51,19 @@ test('configured HTTPS origin sets a Secure cookie and rejects origin substituti
  const password=randomBytes(32).toString('hex'),f=await fixture({ADMIN_PASSWORD:password,PUBLIC_ORIGIN:'https://longcoin.lol'});
  try{const response=await fetch(f.origin+'/admin/login',{method:'POST',redirect:'manual',headers:{Origin:'https://longcoin.lol','Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});assert.equal(response.status,303);assert.match(response.headers.get('set-cookie'),/; Secure/);}finally{await f.close();}
 });
+
+test('Railway custom domain accepts its own origin without pinning the generated domain',async()=>{
+ const password=randomBytes(32).toString('hex');
+ const f=await fixture({ADMIN_PASSWORD:password,RAILWAY_ENVIRONMENT_ID:'production',RAILWAY_PUBLIC_DOMAIN:'generated.up.railway.app'});
+ try{
+  const send=origin=>fetch(f.origin+'/admin/login',{method:'POST',redirect:'manual',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+  assert.equal((await send('https://evil.example')).status,403);
+  const response=await send(f.origin.replace('http:','https:'));assert.equal(response.status,303);assert.match(response.headers.get('set-cookie'),/; Secure/);
+ }finally{await f.close();}
+});
+test('invalid admin configuration explains setup without offering a broken login form',async()=>{
+ for(const password of ['', 'short', 'x'.repeat(257)]){
+  const f=await fixture({ADMIN_PASSWORD:password});
+  try{const response=await fetch(f.origin+'/admin/login');assert.equal(response.status,503);const html=await response.text();assert.match(html,/ADMIN_PASSWORD/);assert.doesNotMatch(html,/<form/);}finally{await f.close();}
+ }
+});
