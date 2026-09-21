@@ -54,7 +54,7 @@ test('journal serializes orders, survives service reloads and rejects key substi
 });
 test('ambiguous sends and restarts only resend the original signed transaction',async()=>{
  const db=new DatabaseSync(':memory:'),f=fixture(),sent=[];
- const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test-only',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test-only',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()});
  let preparations=0;
  const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){sent.push(Buffer.from(bytes).toString('base64'));throw Error('RPC disconnected after accepting transaction');}};
@@ -71,20 +71,20 @@ test('ambiguous sends and restarts only resend the original signed transaction',
  }finally{service.close();db.close();}
 });
 test('expired signatures remain unresolved and block duplicate spending',async()=>{
- const db=new DatabaseSync(':memory:'),f=fixture(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const db=new DatabaseSync(':memory:'),f=fixture(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 101;},async sendRawTransaction(){assert.fail('Expired transaction must not be sent');}};
  const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()}),dependencies:{rpc:()=>connection,prepare:async()=>({tx:f.tx(),expected:f.expected,lastHeight:100})}});
  try{await service.execute({kind:'resume'});await service.execute({kind:'open',market:'SOL'},'expired-order');assert.equal(service.journal.get('expired-order').status,'unknown');assert.equal(service.journal.paused(),true);}finally{service.close();db.close();}
 });
 test('no private provider URL or private key is stored in preparation failure messages',async()=>{
- const db=new DatabaseSync(':memory:'),f=fixture(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const db=new DatabaseSync(':memory:'),f=fixture(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()}),dependencies:{prepare:async()=>{throw Error('https://provider/?key=private-provider-token');}}});
  try{await service.execute({kind:'resume'});const result=await service.execute({kind:'open',market:'SOL'},'failed-order');assert.equal(result.orders[0].status,'failed');assert.equal(JSON.stringify(result).includes('private-provider-token'),false);}finally{service.close();db.close();}
 });
 
 test('cycle allocations are fixed before the first trade and survive partial progress',async()=>{
  const db=new DatabaseSync(':memory:'),f=fixture(),prepared=[];
- const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()});
  const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getMultipleAccountsInfo(){return [null,null,null];},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){return base58(VersionedTransaction.deserialize(bytes).signatures[0]);}};
  let balance=100;
@@ -100,7 +100,7 @@ test('cycle allocations are fixed before the first trade and survive partial pro
 });
 test('cycles require the developer to be the verified creator and pause on mismatch',async()=>{
  const db=new DatabaseSync(':memory:'),f=fixture();
- const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
  const service=createLivePerps({sqlite:db,env,config:async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()}),dependencies:{rpc:()=>({async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getMultipleAccountsInfo(){return [null,null,null];}}),api:async()=>({count:0,dataList:[]}),report:async()=>({creator:Keypair.generate().publicKey.toBase58(),rewardsSol:1,walletSol:1,usdc:100,prices:{SOL:100}}),prepare:async()=>assert.fail('Mismatched creator must never prepare transactions')}});
  try{await service.execute({kind:'resume'});await service.advanceCycle();assert.equal(service.journal.paused(),true);assert.match((await service.status()).cycle.message,/creator/);}finally{service.close();db.close();}
 });
@@ -117,7 +117,7 @@ test('real order preparation validates quote, chain accounts and simulation befo
    const tx=f.tx(tamper?[...f.instructions,SystemProgram.transfer({fromPubkey:f.owner,toPubkey:Keypair.generate().publicKey,lamports:1000})]:f.instructions);
    return {positionPubkey:f.position.toBase58(),serializedTxBase64:Buffer.from(tx.serialize()).toString('base64'),txMetadata:{blockhash:PublicKey.default.toBase58(),lastValidBlockHeight:'100'},quote:{side:'long',sizeUsdDelta:'50000000',averagePriceUsd:'100000000',liquidationPriceUsd:'70000000',leverage:'5'}};
   };
-  const service=createLivePerps({sqlite:db,env:{ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])},config,dependencies:{rpc:()=>connection,api}});
+  const service=createLivePerps({sqlite:db,env:{ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])},config,dependencies:{rpc:()=>connection,api}});
   try{await service.execute({kind:'resume'});const result=await service.execute({kind:'open',market:'SOL'},'validated-order');assert.equal(result.orders[0].status,tamper?'failed':'submitted',result.orders[0].message);assert.equal(sends,tamper?0:1);assert.equal(simulations,tamper?0:1);}finally{service.close();db.close();}
  }
 });
@@ -132,4 +132,70 @@ test('SOL funding may wrap only the exact authorized amount into the developer A
  const stolen=SystemProgram.transfer({fromPubkey:f.owner,toPubkey:Keypair.generate().publicKey,lamports:100000000});
  assert.throws(()=>inspectPerpsTransaction(f.tx([stolen,sync,open,...f.instructions.slice(1)]),[],expected),/SOL transfer/);
  assert.throws(()=>inspectPerpsTransaction(f.tx([wrap,sync,open,...f.instructions.slice(1)]),[],{...expected,collateral:'100000001'}),/collateral/);
+});
+import {closeReceipt,buybackBudget,inspectSwap,tokenDelta,prepareBuyback,tokenAta} from '../scripts/buybacks.mjs';
+function payout(owner,request,amount){
+ const keys=[PERPS,TOKEN,new PublicKey(request),associated(request),associated(owner)];
+ const data=Buffer.concat([Buffer.from([3]),u64(amount)]);
+ return {transaction:{message:{staticAccountKeys:keys}},meta:{err:null,loadedAddresses:{writable:[],readonly:[]},innerInstructions:[{index:0,instructions:[{programIdIndex:1,accounts:[3,4,2],data:base58(data)}]}],preTokenBalances:[{accountIndex:4,mint:USDC.toBase58(),owner,uiTokenAmount:{amount:'1000000'}}],postTokenBalances:[{accountIndex:4,mint:USDC.toBase58(),owner,uiTokenAmount:{amount:String(1000000n+BigInt(amount))}}]}};
+}
+test('close receipts require a finalized payout from the recorded request escrow, not wallet deposits',()=>{
+ const owner=Keypair.generate().publicKey.toBase58(),request=Keypair.generate().publicKey.toBase58(),t=payout(owner,request,50000000);
+ assert.equal(closeReceipt(t,owner,request),50000000n);
+ assert.equal(closeReceipt(t,owner,Keypair.generate().publicKey.toBase58()),0n);
+ const deposit=structuredClone(t);deposit.transaction=t.transaction;deposit.meta.innerInstructions=[];assert.equal(closeReceipt(deposit,owner,request),0n);
+ t.meta.err={InstructionError:[0,'failed']};assert.equal(closeReceipt(t,owner,request),0n);
+});
+test('buyback budget reserves all cycle principal, fees and previously spent profit',()=>{
+ assert.equal(buybackBudget(50000000,100000000,5000000,75,0),0n);
+ assert.equal(buybackBudget(145000000,100000000,5000000,75,0),30000000n);
+ assert.equal(buybackBudget(145000000,100000000,5000000,75,30000000),0n);
+ assert.equal(buybackBudget(90000000,100000000,5000000,100,0),0n);
+});
+function swapFixture(){
+ const owner=Keypair.generate().publicKey,mint=Keypair.generate().publicKey,dest=tokenAta(owner,mint),jup=new PublicKey('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'),slip=Buffer.alloc(2);slip.writeUInt16LE(50);
+ const ix=new TransactionInstruction({programId:jup,keys:[TOKEN,owner,associated(owner),dest,jup,mint,jup].map((pubkey,i)=>({pubkey,isSigner:i===1,isWritable:i===2||i===3})),data:Buffer.concat([discriminator('global:route'),Buffer.alloc(4),u64(10000000),u64(100000000),slip,Buffer.from([0])])});
+ return {owner,mint,dest,ix,quote:{inputMint:USDC.toBase58(),outputMint:mint.toBase58(),inAmount:'10000000',outAmount:'100000000',otherAmountThreshold:'99500000',swapMode:'ExactIn',slippageBps:50,priceImpactPct:'0.001'}};
+}
+test('swap instruction rejects changed CA, recipient, amount, slippage, signer and writable wallet',()=>{
+ const f=swapFixture(),verify=()=>inspectSwap(f.ix,f.owner.toBase58(),f.mint.toBase58(),f.dest.toBase58(),10000000n,f.quote,50);
+ verify();f.ix.keys[3].pubkey=Keypair.generate().publicKey;assert.throws(verify,/destination/);f.ix.keys[3].pubkey=f.dest;
+ f.ix.data[f.ix.data.length-3]=51;assert.throws(verify,/amount/);f.ix.data[f.ix.data.length-3]=50;
+ f.ix.keys[1].isWritable=true;assert.throws(verify,/writable/);f.ix.keys[1].isWritable=false;
+ f.ix.keys[5].isSigner=true;assert.throws(verify,/signer/);
+});
+test('buyback preparation verifies actual simulated USDC debit and purchased token credit',async()=>{
+ const f=swapFixture(),mintData=Buffer.alloc(82);mintData[45]=1;
+ const token=(mint,amount)=>{const data=Buffer.alloc(165);mint.toBuffer().copy(data);f.owner.toBuffer().copy(data,32);data.writeBigUInt64LE(BigInt(amount),64);data[108]=1;return {owner:TOKEN,data};};
+ const input=token(USDC,20000000),output=token(f.mint,0);let wrong=false;
+ const rpc={async getAccountInfo(a){return a.equals(f.mint)?{owner:TOKEN,data:mintData}:a.equals(associated(f.owner))?input:output;},async getBalance(){return 100000000;},async getMultipleAccountsInfo(keys){return keys.map(()=>null);},async getLatestBlockhash(){return {blockhash:PublicKey.default.toBase58(),lastValidBlockHeight:100};},async getFeeForMessage(){return {value:145000};},async simulateTransaction(){const encode=a=>({owner:a.owner.toBase58(),data:[a.data.toString('base64'),'base64']});return {value:{err:null,accounts:[{lamports:97000000},encode(token(USDC,10000000)),encode(token(f.mint,wrong?1:100000000))]}};}};
+ const api=async path=>path.startsWith('quote?')?f.quote:{swapInstruction:{programId:f.ix.programId.toBase58(),accounts:f.ix.keys.map(k=>({...k,pubkey:k.pubkey.toBase58()})),data:f.ix.data.toString('base64')},addressLookupTableAddresses:[]};
+ const c={...defaults,vault:f.owner.toBase58(),tokenMint:f.mint.toBase58()};
+ const result=await prepareBuyback(rpc,{},c,10000000n,api);assert.equal(result.expected.amount,'10000000');assert.equal(result.expected.destination,f.dest.toBase58());
+ wrong=true;await assert.rejects(prepareBuyback(rpc,{},c,10000000n,api),/simulation changed/);
+});
+test('finalized TP close automatically queues one profit buyback and survives restart without double spending',async()=>{
+ const db=new DatabaseSync(':memory:'),f=fixture(),owner=f.owner.toBase58(),request=f.expected.position,mint=Keypair.generate().publicKey.toBase58();
+ const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const config=async()=>({...defaults,vault:owner,tokenMint:mint});let sent=0,prepared=0;
+ const rpc={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';},async getAccountInfo(){return null;},async getSignaturesForAddress(){return [{signature:'close-fill',err:null}];},async getTransaction(){return payout(owner,request,150000000);},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(){sent++;throw Error('ambiguous send');}};
+ const dependencies={rpc:()=>rpc,prepare:async action=>{prepared++;assert.equal(action.kind,'buyback');assert.equal(action.amount,'30000000');return {tx:f.tx(),lastHeight:100,expected:{kind:'buyback',owner,amount:action.amount,source:associated(owner).toBase58(),destination:tokenAta(owner,mint).toBase58(),mint,minimum:'1'}};}};
+ let service=createLivePerps({sqlite:db,env,config,dependencies});
+ try{
+  service.journal.reserve('cycle-one-0',{kind:'open',market:'SOL'});service.journal.signed('cycle-one-0',{expected:{...f.expected,requests:[{address:request,trigger:true}]},wire:'none',signature:'open',lastHeight:1});service.journal.update('cycle-one-0','filled','open');
+  db.prepare('UPDATE live_cycle SET state=?').run(JSON.stringify({id:'cycle-one',phase:'watching',owner,mint,plans:[{market:'SOL'}],profit:{principal:'100000000',feeReserve:'10000000',percent:75,settled:[],sequence:0}}));
+  await service.execute({kind:'resume'});await service.advanceCycle();
+  assert.equal(prepared,1);assert.equal(service.journal.active().kind,'buyback');assert.equal(db.prepare('SELECT COUNT(*) n FROM close_receipts').get().n,1);
+  assert.throws(()=>service.resetCycle(),/Finish/);
+  service.close();service=createLivePerps({sqlite:db,env,config,dependencies});await service.reconcile();await service.advanceCycle();assert.equal(prepared,1);assert.equal(sent,2);
+  const buyback=service.journal.active(),e=JSON.parse(buyback.expected);
+  rpc.getSignatureStatuses=async()=>({value:[{confirmationStatus:'finalized',err:null}]});
+  rpc.getTransaction=async signature=>signature==='close-fill'?payout(owner,request,150000000):{
+   transaction:{message:{staticAccountKeys:[new PublicKey(e.source),new PublicKey(e.destination)]}},meta:{err:null,preTokenBalances:[{accountIndex:0,mint:USDC.toBase58(),owner,uiTokenAmount:{amount:'50000000'}}],postTokenBalances:[{accountIndex:0,mint:USDC.toBase58(),owner,uiTokenAmount:{amount:'20000000'}},{accountIndex:1,mint,owner,uiTokenAmount:{amount:'500'}}]}};
+  await service.reconcile();assert.equal(service.journal.get(buyback.id).status,'filled');
+  // Finality alone never marks a buyback successful when actual token delivery differs.
+  service.journal.update(buyback.id,'submitted','test replay');
+  const receipt=await rpc.getTransaction(buyback.signature);receipt.meta.postTokenBalances[1].uiTokenAmount.amount='0';rpc.getTransaction=async()=>receipt;
+  await service.reconcile();assert.equal(service.journal.get(buyback.id).status,'unknown');assert.equal(service.journal.paused(),true);
+ }finally{service.close();db.close();}
 });

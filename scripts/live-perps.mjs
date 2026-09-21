@@ -7,6 +7,8 @@ import {rpcConnection,jupiter,parsePositions,readMainnet} from '../.sites-runtim
 import {validateConfig,MARKETS} from '../.sites-runtime/lib/engine.mjs';
 import {PERPS,USDC,associated,positionAddress,inspectPerpsTransaction,decodeRequest,discriminator} from './perps-policy.mjs';
 
+import {prepareBuyback,closeReceipt,buybackBudget,tokenDelta} from './buybacks.mjs';
+
 const fingerprint=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function base58(bytes){const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let n=0n;for(const b of bytes)n=n*256n+BigInt(b);let result='';while(n){result=alphabet[Number(n%58n)]+result;n/=58n;}for(const b of bytes){if(b!==0)break;result='1'+result;}return result;}
 const rawAmount=z.string().regex(/^\d+$/).refine(s=>Number.isSafeInteger(Number(s)));
@@ -50,12 +52,14 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  // A preparation has no persisted signature and therefore could never be broadcast.
  // CAS in signed() fences any older process still finishing that preparation.
  sqlite.prepare("UPDATE live_orders SET status='failed',message='Preparation interrupted before signing; safe to submit a new command',updated=? WHERE status='preparing'").run(Date.now());
+ sqlite.exec("CREATE TABLE IF NOT EXISTS close_receipts (signature TEXT NOT NULL, request TEXT NOT NULL, cycle TEXT NOT NULL, amount TEXT NOT NULL, PRIMARY KEY(signature,request));");
  let reconciling=false,cycling=false,closed=false;
- function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Set LIVE_TRADING_ENABLED=true in Railway to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Set SOLANA_RPC_URL.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(!c.tokenMint)missing.push('Save the token CA.');return missing;}
+ function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Set LIVE_TRADING_ENABLED=true in Railway to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Set SOLANA_RPC_URL.');if(c.buybackPercent>0&&!env.JUPITER_API_KEY)missing.push('Set JUPITER_API_KEY for automatic token buybacks.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(!c.tokenMint)missing.push('Save the token CA.');return missing;}
  async function status(){const c=await config();return {enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
  async function verifiedConnection(){const connection=rpc();if(await connection.getGenesisHash()!=='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')fail('Live perpetuals require a verified Solana mainnet RPC.');return connection;}
  async function prepare(action,c){
   validateConfig(c);const connection=await verifiedConnection();
+  if(action.kind==='buyback')return prepareBuyback(connection,env,c,BigInt(action.amount),dependencies.swapApi);
   if(action.kind==='claim'){
    const report=await (dependencies.report?dependencies.report(c):readMainnet(c,env));
    if(report.creator!==c.vault||report.rewardsSol===null||report.rewardsSol<=0)fail('No verified claimable fees for this developer wallet and token.');
@@ -130,6 +134,14 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const result=(await connection.getSignatureStatuses([row.signature],{searchTransactionHistory:true})).value[0];
    if(result?.err&&result.confirmationStatus==='finalized'){journal.update(row.id,'failed','Transaction failed on-chain; no fill was created.');return;}
    if(result?.confirmationStatus==='finalized'){
+    if(row.kind==='buyback'){
+     const receipt=await connection.getTransaction(row.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});
+     if(!receipt)return;
+     if(tokenDelta(receipt,expected.source,USDC.toBase58(),expected.owner)!==-BigInt(expected.amount)||tokenDelta(receipt,expected.destination,expected.mint,expected.owner)<BigInt(expected.minimum)){
+      journal.pause(true);journal.update(row.id,'unknown','Buyback finalized but received tokens could not be verified. Inspect the original signature.');return;
+     }
+     journal.update(row.id,'filled','Realized profit bought back into the configured token; receipt finalized.');return;
+    }
     if(row.kind==='claim'){journal.update(row.id,'filled','Creator fee claim finalized on-chain.');return;}
     const info=await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),size=chainSize(info,expected.owner,expected.market);
     const requests=await connection.getMultipleAccountsInfo(expected.requests.map(r=>new PublicKey(r.address)),'finalized');
@@ -160,10 +172,11 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  }
  async function execute(action,id,internal=false){
   const c=await config();if(action.kind==='pause'){journal.pause(true);return status();}
-  if(action.kind==='resume'){const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({phase:'watching',nextAt:0});journal.pause(false);return status();}
-  if(!['open','close','claim'].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');
+  if(action.kind==='resume'){const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({...cycle(),phase:cycle().resumePhase||'watching',message:undefined,nextAt:0});journal.pause(false);return status();}
+  if(!['open','close','claim',...(internal?['buyback']:[])].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');
   const missing=reasons(c);if(missing.length)fail(missing.join(' '));
   if(action.kind!=='close'&&journal.paused())fail('Live orders are paused. Enable them in Admin first.');
+  if(action.kind==='open'&&!internal&&cycle().profit&&cycle().phase!=='idle')fail('Manual opens are disabled until the current cycle and buyback settle.');
   const previous=journal.get(id);if(!previous&&action.kind==='open'&&!internal){
    const last=sqlite.prepare("SELECT MAX(created) AS time FROM live_orders WHERE kind='open' AND status<>'failed'").get().time;
    if(last&&Date.now()-last<c.cooldownSeconds*1000)fail('Opening cooldown is still active.');
@@ -173,6 +186,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const prepared=await (dependencies.prepare||prepare)(action,c);
    if(closed||fingerprint(await config())!==fingerprint(c)||action.kind!=='close'&&journal.paused())fail('Settings or pause state changed during preparation.');
    const wallet=loadDeveloperWallet(env.DEV_WALLET_PRIVATE_KEY);if(wallet.publicKey.toBase58()!==c.vault)fail('Signing wallet differs from the vault.');
+   if(action.kind==='buyback')prepared.expected.cycle=action.cycle;
    prepared.tx.sign([wallet]);
    journal.signed(id,{expected:prepared.expected,wire:Buffer.from(prepared.tx.serialize()).toString('base64'),signature:base58(prepared.tx.signatures[0]),lastHeight:prepared.lastHeight});
   }catch(e){journal.update(id,'failed',safeError(e),'preparing');return status();}
@@ -187,6 +201,11 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   try{
    const c=await config();if(reasons(c).length)return;let state=cycle();
    if(state.phase==='error')return;
+   if(state.owner&&(state.owner!==c.vault||state.mint!==c.tokenMint))fail('Cycle wallet or token changed. Restore the original configuration before settling profit.');
+   if(state.phase==='watching'&&state.profit){
+    if(await settleProfit(state,c))return;
+    state=cycle();
+   }
    if(state.phase==='claiming'){
     const claim=journal.get(state.id+'-claim');
     if(claim?.status==='filled'){state={...state,phase:'funding'};setCycle(state);}
@@ -197,7 +216,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
     const plan=state.plans[state.index];if(!plan){setCycle({...state,phase:'watching'});return;}
     const id=state.id+'-'+state.index,order=journal.get(id);
     if(order?.status==='filled'||order?.status==='settled'){setCycle({...state,index:state.index+1});return;}
-    if(order?.status==='failed'){journal.pause(true);setCycle({...state,phase:'error',message:order.message});return;}
+    if(order?.status==='failed'){journal.pause(true);setCycle({...state,phase:'error',resumePhase:'opening',message:order.message});return;}
     await execute({kind:'open',...plan},id,true);return;
    }
    const positions=parsePositions(await api('positions?walletAddress='+encodeURIComponent(c.vault)));
@@ -205,7 +224,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const connection=await verifiedConnection(),accounts=await connection.getMultipleAccountsInfo(MARKETS.map(m=>positionAddress(c.vault,m)),'finalized');
    if(closed||journal.paused()||fingerprint(await config())!==fingerprint(c))return;
    if(accounts.some((account,i)=>chainSize(account,c.vault,MARKETS[i])>0n))return;
-   if(state.phase==='watching'){setCycle({phase:'idle',nextAt:Date.now()+c.cooldownSeconds*1000});return;}
+   if(state.phase==='watching'){if(state.profit&&state.profit.settled.length<state.plans.length){setCycle({...state,message:'Waiting for finalized close payout receipts before the next cycle.'});return;}setCycle({phase:'idle',nextAt:Date.now()+c.cooldownSeconds*1000});return;}
    if(Date.now()<(state.nextAt||0))return;
    const report=await (dependencies.report?dependencies.report(c):readMainnet(c,env));
    if(closed||journal.paused()||fingerprint(await config())!==fingerprint(c))return;
@@ -219,9 +238,63 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(available<c.minRewardUsd)return;
    const plans=MARKETS.filter(m=>c.allocation[m]>0).map(m=>({market:m,inputToken,budget:Math.floor(Math.min(available*c.allocation[m]/100,c.maxPositionUsd/c.leverage)/price*decimals)}));
    if(!plans.length||plans.some(p=>p.budget/decimals*price<10)){journal.pause(true);setCycle({...state,phase:'error',message:'Each enabled market needs at least $10 collateral. Add funds or adjust the strategy.'});return;}
-   setCycle({phase:'opening',id:state.id||randomUUID(),plans,index:0,nextAt:0});
-  }catch(e){if(!closed){if(e?.safe){journal.pause(true);setCycle({...cycle(),phase:'error',message:e.message});}else setCycle({...cycle(),message:'Connection checks are unavailable. The cycle will retry without creating a replacement order.'});}}finally{cycling=false;}
+   const principal=Math.ceil(plans.reduce((sum,p)=>sum+p.budget/decimals*price*1e6,0));
+   // Reserve all cycle collateral, including still-open legs, plus capped open/close and buyback SOL costs.
+   const feeReserve=Math.ceil((plans.length*0.08+0.01)*report.prices.SOL*1e6);
+   setCycle({phase:'opening',id:state.id||randomUUID(),owner:c.vault,mint:c.tokenMint,plans,index:0,nextAt:0,profit:{principal:String(principal),feeReserve:String(feeReserve),percent:c.buybackPercent,settled:[],sequence:0}});
+  }catch(e){if(!closed){if(e?.safe){journal.pause(true);setCycle({...cycle(),resumePhase:cycle().phase,phase:'error',message:e.message});}else setCycle({...cycle(),message:'Connection checks are unavailable. The cycle will retry without creating a replacement order.'});}}finally{cycling=false;}
+ }
+ async function settleProfit(state,c){
+  const connection=await verifiedConnection(),profit=state.profit;
+  // An existing buyback must settle before another amount can be reserved.
+  if(profit.order){
+   const previous=journal.get(profit.order);
+   if(previous?.status==='failed'){journal.pause(true);setCycle({...state,phase:'error',resumePhase:'watching',message:'Buyback failed; profit remains reserved. Resume retries only a definitively failed transaction.'});profit.order=null;setCycle({...cycle(),profit});return true;}
+   if(previous&&previous.status!=='filled')return true;
+   profit.order=null;if(previous)profit.sequence++;
+  }
+  for(let index=0;index<state.plans.length;index++){
+   if(profit.settled.includes(index))continue;
+   const open=journal.get(state.id+'-'+index);if(!open?.expected)continue;
+   const expected=JSON.parse(open.expected);
+   if(chainSize(await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),c.vault,expected.market)>0n)continue;
+   const requests=expected.requests.filter(r=>r.trigger).map(r=>r.address);
+   // Include protective manual closes issued by this app for the same cycle position.
+   for(const close of sqlite.prepare("SELECT expected FROM live_orders WHERE kind='close' AND created>=? AND expected IS NOT NULL").all(open.created)){
+    const e=JSON.parse(close.expected);if(e.owner===c.vault&&e.position===expected.position)requests.push(...e.requests.map(r=>r.address));
+   }
+   let found=false;
+   for(const request of new Set(requests)){
+    let before,complete=false;
+    for(let page=0;page<10;page++){
+     const signatures=await connection.getSignaturesForAddress(new PublicKey(request),{limit:100,...(before?{before}:{})},'finalized');
+     for(const signature of signatures){
+      if(signature.err)continue;
+      if(sqlite.prepare('SELECT 1 FROM close_receipts WHERE signature=? AND request=?').get(signature.signature,request)){found=true;continue;}
+      const tx=await connection.getTransaction(signature.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});
+      if(!tx)throw Error('Historical receipt unavailable');
+      const amount=closeReceipt(tx,c.vault,request);
+      if(amount>0n){sqlite.prepare('INSERT OR IGNORE INTO close_receipts VALUES(?,?,?,?)').run(signature.signature,request,state.id,String(amount));found=true;}
+     }
+     if(signatures.length<100){complete=true;break;}before=signatures.at(-1).signature;
+    }
+    if(!complete)fail('Close receipt history exceeds the supported scan. Reconcile before continuing.');
+   }
+   if(found)profit.settled.push(index);
+  }
+  const received=sqlite.prepare('SELECT amount FROM close_receipts WHERE cycle=?').all(state.id).reduce((sum,r)=>sum+BigInt(r.amount),0n);
+  const spent=sqlite.prepare("SELECT expected FROM live_orders WHERE kind='buyback' AND status<>'failed' AND expected IS NOT NULL").all().reduce((sum,r)=>{const e=JSON.parse(r.expected);return sum+(e.cycle===state.id?BigInt(e.amount):0n);},0n);
+  const amount=buybackBudget(received,profit.principal,profit.feeReserve,profit.percent,spent);
+  profit.received=String(received);profit.spent=String(spent);setCycle({...state,profit,message:undefined});
+  // Avoid dust orders; retained dust can be used as collateral in the next cycle.
+  if(amount<1000000n)return false;
+  if(closed||journal.paused()||fingerprint(await config())!==fingerprint(c))return true;
+  const id=state.id+'-buyback-'+profit.sequence;
+  // A preparation failure has no signature; a failed chain transaction is finalized. Only these allow a new ID.
+  if(journal.get(id)?.status==='failed'){profit.sequence++;setCycle({...state,profit});return true;}
+  profit.order=id;setCycle({...state,profit,message:'Buying back verified realized profit.'});
+  await execute({kind:'buyback',market:'SOL',amount:String(amount),cycle:state.id},id,true);return true;
  }
  const timer=setInterval(()=>void reconcile().then(()=>advanceCycle()),10000);timer.unref();
- return {status,execute,reconcile,advanceCycle,journal,resetCycle(){setCycle({phase:'idle',nextAt:0});},close(){closed=true;clearInterval(timer);},safeError};
+ return {status,execute,reconcile,advanceCycle,journal,hasUnsettledCycle(){return !!cycle().profit&&cycle().phase!=='idle';},resetCycle(){if(cycle().profit&&cycle().phase!=='idle')fail('Finish the current cycle and buyback before changing setup.');setCycle({phase:'idle',nextAt:0});},close(){closed=true;clearInterval(timer);},safeError};
 }

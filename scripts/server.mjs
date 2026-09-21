@@ -92,7 +92,7 @@ export async function createApp(options={}){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
     if(!requirePost())return;
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
-    if(setupBusy||live.journal.active())return send(409,{error:'Wait for the current order or settings save to finish.'});
+    if(setupBusy||live.journal.active()||live.hasUnsettledCycle())return send(409,{error:'Wait for the current cycle, buyback or settings save to finish.'});
     const input=JSON.parse(await body(req,4096));
     if(!input||Object.keys(input).some(k=>!['tokenMint','privateKey','cycleSeconds'].includes(k))||typeof input.tokenMint!=='string'||!isPublicKey(input.tokenMint)||!Number.isInteger(input.cycleSeconds)||input.cycleSeconds<10||input.cycleSeconds>86400||input.privateKey!==undefined&&(typeof input.privateKey!=='string'||input.privateKey.length>512))return send(400,{error:'Enter a valid token CA, a cycle interval of 10–86400 seconds, and a valid developer key.'});
     if(input.privateKey&&!(expectedOrigin.startsWith('https:')||env.RAILWAY_ENVIRONMENT_ID||['127.0.0.1','localhost','[::1]'].includes(url.hostname)&&req.headers.host?.startsWith('127.0.0.1:')))return send(400,{error:'Private keys can only be saved over HTTPS or a local loopback connection.'});
@@ -131,6 +131,7 @@ export async function createApp(options={}){
     if(!requirePost())return;
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
     const action=JSON.parse(await body(req));if(!['tick','claim','buyback','close','pause','resume','configure'].includes(action.type)||action.market&&!['BTC','ETH','SOL'].includes(action.market))return send(400,{error:'Invalid action'});
+    if(action.type==='configure'&&(live.journal.active()||live.hasUnsettledCycle()))return send(409,{error:'Finish the current cycle and buyback before changing settings.'});
     const result=await command(owner,action,req.headers['idempotency-key']||'',db);return send(result.error?422:200,{...decorate(result.state),error:result.error});
    }
    if(url.pathname.startsWith('/api/'))return send(404,{error:'Not found'});

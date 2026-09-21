@@ -13,7 +13,7 @@ export function LiveTrading(){
  }
  const working=state?.orders.some(o=>['preparing','signed','submitted','confirmed','unknown'].includes(o.status));
  return <section className="panel settings-section"><h2>Long cycles <small>{state?.enabled?(state.paused?'Paused':'Enabled'):'Not enabled'}</small></h2>
- <p>Claims creator fees with the developer wallet, then opens the allocated longs with on-chain TP and SL. The next cycle waits until all positions close. Uses available SOL or USDC, including existing wallet funds.</p>
+ <p>Claims creator fees with the developer wallet, then opens the allocated longs with on-chain TP and SL. After finalized closes, eligible net profit buys back the saved token CA. Cycle collateral and fees are reserved first; the next cycle waits for settlement. Uses available SOL or USDC, including existing wallet funds.</p>
  {state?.reasons.map(reason=><p key={reason} className="admin-note">{reason}</p>)}
  <div className="actions"><button type="button" className="primary" disabled={busy||!state?.enabled||!state.paused} onClick={()=>act('resume')}>Start cycles</button><button type="button" className="secondary" disabled={busy||!state||state.paused} onClick={()=>act('pause')}>Pause cycles</button><a className="text-button" href="https://jup.ag/perps" target="_blank" rel="noreferrer">Manage in Jupiter ↗</a></div>
  <details><summary>Manual controls</summary><div className="actions"><button type="button" disabled={busy||!state?.enabled||state.paused||working} onClick={()=>act('claim','SOL')}>Claim fees</button></div><div className="actions">{['BTC','ETH','SOL'].map(m=><button key={m} type="button" disabled={busy||!state?.enabled||state.paused||working||!!pending.current} onClick={()=>act('open',m)}>Open {m} long</button>)}</div>

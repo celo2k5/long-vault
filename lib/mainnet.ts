@@ -74,7 +74,7 @@ export async function readMainnet(config:Config,env:LiveEnvironment):Promise<Mai
  ]);
  if(config.vault&&r.creator&&config.vault!==r.creator)r.checks.push({name:'Reward routing',status:'blocked',detail:'Fees pay the creator wallet. A different vault requires an authorized transfer from that creator.'});
  if(r.positions?.some(p=>p.side!=='long'||!p.stopLossPrice||!p.takeProfitPrice))r.checks.push({name:'Position protection',status:'blocked',detail:'Existing positions include a short or a missing on-chain TP/SL. Review in Jupiter.'});
- r.checks.push({name:'Automated execution',status:'blocked',detail:'Use Live positions in Admin for trading status. Connection checks and previews cannot move funds; reward automation remains disabled.'});
+ r.checks.push({name:'Automated execution',status:'blocked',detail:'Use Live positions in Admin for trading status. Connection checks and previews cannot move funds; the separate cycle worker handles execution.'});
  r.checkedAt=Date.now();return r;
 }
 
