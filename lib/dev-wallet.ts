@@ -12,8 +12,8 @@ export function developerWalletStatus(secret:string|undefined,vault?:string,crea
    bytes=Uint8Array.from(values);
   }else{
    const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-   let value=0n;for(const c of text){const digit=alphabet.indexOf(c);if(digit<0)throw Error();value=value*58n+BigInt(digit);}
-   const decoded:number[]=[];while(value){decoded.unshift(Number(value&255n));value>>=8n;}
+   let value=BigInt(0);for(const c of text){const digit=alphabet.indexOf(c);if(digit<0)throw Error();value=value*BigInt(58)+BigInt(digit);}
+   const decoded:number[]=[];while(value){decoded.unshift(Number(value&BigInt(255)));value>>=BigInt(8);}
    for(const c of text){if(c!=='1')break;decoded.unshift(0);}
    if(decoded.length!==64)throw Error();bytes=Uint8Array.from(decoded);
   }
