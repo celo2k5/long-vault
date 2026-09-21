@@ -2,6 +2,10 @@
 
 A green/black public dashboard and password-protected Admin for a single developer wallet. Mainnet balances and positions are real reads; unavailable data stays unavailable. No simulated fee claims are shown.
 
+## Current live-execution limitation
+
+An unsigned BTC/SOL-funded quote checked on September 21, 2026 returned Jupiter's **instant** position format: owner plus keeper and API-keeper signers, with instant increase/TP-SL instructions and an additional collateral-swap instruction. This app's validator/submission/settlement adapter supports the older position-request format. The current instant quote is therefore blocked before wallet signing. Funding changes do not resolve it. Live opens through that route are not operational until a complete instant-format adapter, keeper submission flow and settlement accounting are implemented and verified. Do not remove signer checks to bypass this block. No funded execution has been verified.
+
 ## Railway setup
 
 Use Node 22.13+, one replica, `npm run build:railway` and `npm run start:railway`. `railway.json` supplies these commands, `/health`, and the server binds `0.0.0.0:$PORT`.

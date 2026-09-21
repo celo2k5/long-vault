@@ -224,3 +224,13 @@ test('SOL test funding converts the $10 limit without allocating the full wallet
  const amount=testCollateralAmount('SOL',143.17);assert.ok(amount/1e9*143.17>=10);assert.ok(amount/1e9*143.17<10+143.17/1e9);
  for(const price of [0,-1,NaN,Infinity])assert.throws(()=>testCollateralAmount('SOL',price),/price/);
 });
+
+test('instant Jupiter keeper transactions are explicitly blocked before wallet signing',()=>{
+ const f=fixture(),keeper=Keypair.generate().publicKey,apiKeeper=Keypair.generate().publicKey;
+ const ix=new TransactionInstruction({programId:PERPS,keys:[{pubkey:keeper,isSigner:true,isWritable:false},{pubkey:apiKeeper,isSigner:true,isWritable:false},{pubkey:f.owner,isSigner:true,isWritable:true}],data:discriminator('global:instant_increase_position')});
+ const tx=f.tx([ix]);assert.equal(tx.message.header.numRequiredSignatures,3);
+ assert.throws(()=>inspectPerpsTransaction(tx,[],f.expected),/instant-trade format with keeper co-signers/);
+ assert.ok(tx.signatures.every(sig=>sig.every(b=>b===0)));
+ const unexpected=f.tx([new TransactionInstruction({programId:PERPS,keys:[{pubkey:keeper,isSigner:true,isWritable:false}],data:Buffer.alloc(8)})]);
+ assert.throws(()=>inspectPerpsTransaction(unexpected,[],f.expected),/unexpected signer/);
+});

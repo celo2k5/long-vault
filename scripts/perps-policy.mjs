@@ -25,6 +25,11 @@ class Reader{
 export function inspectPerpsTransaction(tx,lookups,expected){
  const owner=new PublicKey(expected.owner),position=positionAddress(owner,expected.market);
  invariant(position.toBase58()===expected.position,'position does not belong to the selected wallet and market');
+ // Jupiter's instant API requires keeper co-signatures and different execution/settlement layouts.
+ // Recognize the format for diagnostics only; do not weaken the legacy signing policy.
+ const instantNames=['instant_increase_position','instant_decrease_position','instant_create_tpsl'];
+ const instant=tx.message.compiledInstructions.some(ix=>instantNames.some(name=>Buffer.from(ix.data).subarray(0,8).equals(discriminator('global:'+name))));
+ invariant(!instant,'Jupiter returned its instant-trade format with keeper co-signers. This execution adapter does not support that format yet; no wallet signature or transaction was sent. Changing wallet funding will not fix this.');
  invariant(tx.message.header.numRequiredSignatures===1&&tx.message.staticAccountKeys[0].equals(owner),'unexpected signer');
  invariant(tx.signatures.every(s=>s.every(b=>b===0)),'transaction is already signed');
  const message=TransactionMessage.decompile(tx.message,{addressLookupTableAccounts:lookups});
