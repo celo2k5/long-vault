@@ -86,3 +86,8 @@ Tests cover the simulation engine, concurrent keeper requests and durable receip
 - [Railway port binding](https://docs.railway.com/networking/troubleshooting/application-failed-to-respond)
 - [Railway health checks](https://docs.railway.com/deployments/healthchecks)
 - BTC/ETH SVG paths: cryptocurrency-icons, license in public/coins/LICENSE.md. Solana uses its three-bar mark on black with its green/purple gradient (solana.svg). PFP is the supplied original image; accent #2DD409. The reference dashboard inspired the layout without a pixel-for-pixel copy.
+
+### Developer wallet
+Set `DEV_WALLET_PRIVATE_KEY` in the Railway service Variables and deploy. Use a Solana base58-encoded 64-byte secret key or a JSON array of 64 bytes, never a mnemonic. Do not put it in public frontend variables or commit it. Admin shows only the derived public address and validation status. Use **Use for vault and creator**, then save configuration. The token's actual on-chain creator must match that wallet; entering a different address cannot change fee authority. The browser cannot retrieve or update the private key.
+
+This configures wallet identity only. Live signing, fee claiming, SOL-to-USDC conversion, long execution and buybacks remain disabled pending transaction validation, durable broadcast reconciliation and live accounting. Unsigned previews reject a configured wallet that differs from the vault or discovered creator.

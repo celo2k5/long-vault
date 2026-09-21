@@ -1,3 +1,5 @@
+import {Keypair} from '@solana/web3.js';
+import {developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
@@ -66,4 +68,20 @@ test('invalid admin configuration explains setup without offering a broken login
   const f=await fixture({ADMIN_PASSWORD:password});
   try{const response=await fetch(f.origin+'/admin/login');assert.equal(response.status,503);const html=await response.text();assert.match(html,/ADMIN_PASSWORD/);assert.doesNotMatch(html,/<form/);}finally{await f.close();}
  }
+});
+
+test('developer wallet validates secrets without exposing them in responses',async()=>{
+ const wallet=Keypair.generate(),publicKey=wallet.publicKey.toBase58(),secret=JSON.stringify([...wallet.secretKey]);
+ assert.equal(developerWalletStatus(secret,publicKey,publicKey).status,'configured');
+ let n=0n;for(const b of wallet.secretKey)n=n*256n+BigInt(b);let encoded='';const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';while(n){encoded=alphabet[Number(n%58n)]+encoded;n/=58n;}for(const b of wallet.secretKey){if(b!==0)break;encoded='1'+encoded;}
+ assert.equal(developerWalletStatus(encoded).publicKey,publicKey);
+ assert.equal(developerWalletStatus(secret,Keypair.generate().publicKey.toBase58()).status,'mismatch');
+ assert.equal(developerWalletStatus('not a valid secret').status,'invalid');
+ assert.equal(developerWalletStatus(JSON.stringify(Array(64).fill(0))).status,'invalid');
+ const password=randomBytes(32).toString('hex'),f=await fixture({ADMIN_PASSWORD:password,DEV_WALLET_PRIVATE_KEY:secret});
+ try{
+  const publicData=await(await fetch(f.origin+'/api/public')).text();assert.equal(publicData.includes(secret),false);assert.equal(publicData.includes('developerWallet'),false);
+  const login=await fetch(f.origin+'/admin/login',{method:'POST',redirect:'manual',headers:{Origin:f.origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+  const response=await fetch(f.origin+'/api/vault',{headers:{Cookie:login.headers.get('set-cookie').split(';')[0]}});const text=await response.text();assert.equal(text.includes(secret),false);assert.equal(JSON.parse(text).developerWallet.publicKey,publicKey);
+ }finally{await f.close();}
 });

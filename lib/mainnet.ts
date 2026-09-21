@@ -5,9 +5,10 @@ import pumpSdk from '../node_modules/@pump-fun/pump-sdk/dist/index.js';
 const {OnlinePumpSdk,hasCoinCreatorMigratedToSharingConfig}=pumpSdk;
 import {z} from 'zod';
 import {MARKETS,validateConfig,type Config,type Market} from './engine.ts';
+import {developerWalletStatus} from './dev-wallet.ts';
 import {isPublicKey} from './address.ts';
 
-export type LiveEnvironment={SOLANA_RPC_URL?:string;JUPITER_API_URL?:string;JUPITER_API_KEY?:string};
+export type LiveEnvironment={DEV_WALLET_PRIVATE_KEY?:string;SOLANA_RPC_URL?:string;JUPITER_API_URL?:string;JUPITER_API_KEY?:string};
 export const MINTS={SOL:'So11111111111111111111111111111111111111112',BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',ETH:'7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',USDC:'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'};
 const MAINNET_GENESIS='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const key=z.string().refine(isPublicKey,'Invalid public key');
@@ -87,6 +88,7 @@ async function simulate(connection:Connection,tx:VersionedTransaction,owner:stri
 export async function previewMainnet(config:Config,env:LiveEnvironment,kind:'claim'|'open',market:Market='SOL'):Promise<Preview>{
  validateConfig(config);if(!config.vault)throw Error('Save a vault wallet first');
  const report=await readMainnet(config,env);
+ if(env.DEV_WALLET_PRIVATE_KEY){const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,config.vault,report.creator||undefined);if(wallet.status!=='configured')throw Error(wallet.message);}
  if(report.checks.some(c=>c.status==='error'||c.status==='missing'))throw Error('Resolve the connection checks before requesting a preview');
  if(report.walletSol===null||report.walletSol<0.01)throw Error('Vault needs at least 0.01 SOL for fees before simulation');
  const connection=rpcConnection(env);let tx:VersionedTransaction;

@@ -10,6 +10,8 @@ import {readVault,command,publicState} from '../.sites-runtime/lib/store.mjs';
 import {connectionReport} from '../.sites-runtime/lib/connections.mjs';
 import {previewMainnet} from '../.sites-runtime/lib/mainnet.mjs';
 
+import {developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
+
 const scrypt=promisify(scryptCallback);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const equal=(a,b)=>timingSafeEqual(Buffer.from(hash(a),'hex'),Buffer.from(hash(b),'hex'));
@@ -90,7 +92,7 @@ export async function createApp(options={}){
    if(url.pathname==='/api/vault'){
     if(!authenticated(req))return send(401,{error:'Sign in required'});
     if(env.TRADING_MODE&&env.TRADING_MODE!=='mock')return send(503,{error:'TRADING_MODE must remain mock. Mainnet monitoring is selected in Admin.'});
-    const decorate=state=>({...publicState(state,!!env.KEEPER_SECRET),owner,authProvider:'password',storagePersistent:!!env.DATA_DIR});
+    const decorate=state=>({...publicState(state,!!env.KEEPER_SECRET),owner,authProvider:'password',storagePersistent:!!env.DATA_DIR,developerWallet:developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,state.config.vault,state.config.creator)});
     if(req.method==='GET')return send(200,decorate(JSON.parse((await readVault(owner,db)).state)));
     if(!requirePost())return;
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{error:'JSON required'});
