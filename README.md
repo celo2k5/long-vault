@@ -42,9 +42,9 @@ Prefer `WALLET_ENCRYPTION_KEY` in Railway Variables. If omitted, the server crea
 
 ## Test positions without a token
 
-In Admin → Connections, enable **Position test mode** and allow live trading, then save. In Setup, save a developer wallet with the token CA blank. Fund its USDC associated account with at least $10 USDC per position and keep at least 0.04 SOL for fees/rent. Review leverage and TP/SL in Strategy, then click **Enable position tests** and manually open BTC, ETH or SOL.
+In Admin → Connections, enable **Position test mode** and allow live trading, then save. In Setup, save a developer wallet with the token CA blank. Choose **Test funding → USDC or SOL** in Connections. For USDC, fund the wallet’s USDC associated account with at least $10 per position and keep 0.04 SOL for fees/rent. For SOL, fund approximately $10 worth per position plus the 0.04 SOL reserve; the amount is calculated from the current SOL quote. Review leverage and TP/SL in Strategy, then click **Enable position tests** and manually open BTC, ETH or SOL.
 
-These are real mainnet positions, not simulated trades. Each open forces exactly $10 USDC collateral, regardless of caller-supplied amounts; the normal notional cap and quote/liquidation checks still apply. Test mode does not claim rewards, buy back tokens, or start automatic cycles. Manual closes and on-chain TP/SL remain available. Close and reconcile test positions before switching modes or changing wallet/connection settings. After returning to normal mode, a valid CA and verified fee creator are required again.
+These are real mainnet positions, not simulated trades. Each open forces $10 USDC or the equivalent SOL amount rounded up to the nearest lamport, regardless of caller-supplied amounts; the normal notional cap and quote/liquidation checks still apply. Test mode does not claim rewards, buy back tokens, or start automatic cycles. Manual closes and on-chain TP/SL remain available. Close and reconcile test positions before switching modes or changing wallet/connection settings. After returning to normal mode, a valid CA and verified fee creator are required again.
 
 ## Cycle behavior
 

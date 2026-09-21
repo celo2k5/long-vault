@@ -13,6 +13,7 @@ const fingerprint=value=>createHash('sha256').update(JSON.stringify(value)).dige
 export function base58(bytes){const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let n=0n;for(const b of bytes)n=n*256n+BigInt(b);let result='';while(n){result=alphabet[Number(n%58n)]+result;n/=58n;}for(const b of bytes){if(b!==0)break;result='1'+result;}return result;}
 const rawAmount=z.string().regex(/^\d+$/).refine(s=>Number.isSafeInteger(Number(s)));
 const responseSchema=z.object({positionPubkey:z.string(),serializedTxBase64:z.string().min(80).max(20000),txMetadata:z.object({blockhash:z.string(),lastValidBlockHeight:rawAmount}),quote:z.object({side:z.literal('long'),sizeUsdDelta:rawAmount}).passthrough()});
+export function testCollateralAmount(inputToken,price){if(!Number.isFinite(price)||price<=0)fail('Funding price is unavailable.');const amount=Math.ceil(10/price*(inputToken==='SOL'?1e9:1e6));if(!Number.isSafeInteger(amount)||amount<=0)fail('Funding amount exceeds supported precision.');return amount;}
 const activeSql="('preparing','signed','submitted','confirmed','unknown')";
 const safeError=e=>e?.safe===true?e.message:'Order could not be prepared. Check RPC, balances, API availability and transaction policy; no replacement order was sent.';
 function fail(message){throw Object.assign(Error(message),{safe:true});}
@@ -56,7 +57,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  sqlite.exec("CREATE TABLE IF NOT EXISTS close_receipts (signature TEXT NOT NULL, request TEXT NOT NULL, cycle TEXT NOT NULL, amount TEXT NOT NULL, PRIMARY KEY(signature,request));");
  let reconciling=false,cycling=false,closed=false;
  function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Allow live trading in Admin → Connections to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Save a Solana mainnet RPC URL in Admin → Connections.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(env.PERPS_TEST_MODE!=='true'&&!c.tokenMint)missing.push('Save the token CA.');return missing;}
- async function status(){const c=await config();return {testMode:env.PERPS_TEST_MODE==='true',testCollateralUsd:10,enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
+ async function status(){const c=await config();return {testMode:env.PERPS_TEST_MODE==='true',testCollateralUsd:10,testFunding:env.PERPS_TEST_FUNDING==='SOL'?'SOL':'USDC',enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
  async function verifiedConnection(){const connection=rpc();if(await connection.getGenesisHash()!==MAINNET_GENESIS)fail('Live perpetuals require a verified Solana mainnet RPC.');return connection;}
  async function prepare(action,c){
   validateConfig(c);const connection=await verifiedConnection();
@@ -94,12 +95,12 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
     const solMarket=await api('market-stats?mint=So11111111111111111111111111111111111111112');price=Number(solMarket.price);decimals=1e9;
     if(!Number.isFinite(price)||price<=0)fail('SOL price is unavailable.');amount=BigInt(Math.max(0,sol-40000000));
    }else{
-    if(!tokenAccount||tokenAccount.data.length!==165||tokenAccount.owner.toBase58()!=='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'||!new PublicKey(tokenAccount.data.subarray(0,32)).equals(USDC)||new PublicKey(tokenAccount.data.subarray(32,64)).toBase58()!==owner)fail('Fund the developer wallet USDC associated token account first.');
+    if(!tokenAccount||tokenAccount.data.length!==165||tokenAccount.owner.toBase58()!=='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'||!new PublicKey(tokenAccount.data.subarray(0,32)).equals(USDC)||new PublicKey(tokenAccount.data.subarray(32,64)).toBase58()!==owner)fail('No usable USDC account found. Fund this wallet with USDC, or choose SOL under Admin → Connections → Test funding.');
     amount=tokenAccount.data.readBigUInt64LE(64);
    }
    if(amount>BigInt(Number.MAX_SAFE_INTEGER))fail('Wallet balance exceeds supported precision.');
-   const balance=Number(amount)/decimals*price;if(action.budget===undefined&&balance<c.minRewardUsd)fail('Balance is below the configured minimum cycle capital.');
-   const collateral=action.budget??Math.floor(Math.min(balance*c.allocation[action.market]/100,c.maxPositionUsd/c.leverage)/price*decimals);
+   const balance=Number(amount)/decimals*price;if(action.budget===undefined&&action.testCollateralUsd!==10&&balance<c.minRewardUsd)fail('Balance is below the configured minimum cycle capital.');
+   const collateral=action.testCollateralUsd===10?testCollateralAmount(expected.inputToken,price):action.budget??Math.floor(Math.min(balance*c.allocation[action.market]/100,c.maxPositionUsd/c.leverage)/price*decimals);
    if(!Number.isSafeInteger(collateral)||collateral>Number(amount)||collateral/decimals*price>c.maxPositionUsd/c.leverage*1.01||collateral/decimals*price<10)fail('The allocation must cover at least $10 collateral within the position limit.');
    expected.collateral=String(collateral);
    expected.minOut=String(Math.floor(collateral/decimals*price/mark*({SOL:1e9,BTC:1e8,ETH:1e8}[action.market])*(1-c.slippageBps/10000)));
@@ -173,7 +174,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  }
  async function execute(action,id,internal=false){
   const c=await config();if(env.PERPS_TEST_MODE==='true'&&['claim','buyback'].includes(action.kind))fail('Claims and buybacks are disabled in position test mode.');
-  if(env.PERPS_TEST_MODE==='true'&&action.kind==='open')action={...action,inputToken:'USDC',budget:10000000};
+  if(env.PERPS_TEST_MODE==='true'&&action.kind==='open')action={...action,inputToken:env.PERPS_TEST_FUNDING==='SOL'?'SOL':'USDC',budget:env.PERPS_TEST_FUNDING==='SOL'?undefined:10000000,testCollateralUsd:10};
   if(action.kind==='pause'){journal.pause(true);return status();}
   if(action.kind==='resume'){const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({...cycle(),phase:cycle().resumePhase||'watching',message:undefined,nextAt:0});journal.pause(false);return status();}
   if(!['open','close','claim',...(internal?['buyback']:[])].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');

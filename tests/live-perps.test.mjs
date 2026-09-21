@@ -217,3 +217,10 @@ test('token-free position tests enforce fixed collateral and never start automat
   service.journal.update('test-no-token','filled','Test fill');assert.equal(service.hasUnsettledCycle(),true);
  }finally{service.close();db.close();}
 });
+test('SOL test funding converts the $10 limit without allocating the full wallet balance',async()=>{
+ const {testCollateralAmount}=await import('../scripts/live-perps.mjs');
+ assert.equal(testCollateralAmount('USDC',1),10000000);
+ assert.equal(testCollateralAmount('SOL',200),50000000);
+ const amount=testCollateralAmount('SOL',143.17);assert.ok(amount/1e9*143.17>=10);assert.ok(amount/1e9*143.17<10+143.17/1e9);
+ for(const price of [0,-1,NaN,Infinity])assert.throws(()=>testCollateralAmount('SOL',price),/price/);
+});
