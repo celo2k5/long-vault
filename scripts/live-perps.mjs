@@ -1,5 +1,5 @@
-import {createHash,randomUUID} from 'node:crypto';
-import {PublicKey,VersionedTransaction,TransactionMessage,ComputeBudgetProgram} from '@solana/web3.js';
+import {createHash,randomUUID,createPublicKey,verify} from 'node:crypto';
+import {Keypair,PublicKey,VersionedTransaction,TransactionMessage,ComputeBudgetProgram} from '@solana/web3.js';
 import pumpSdk from '../node_modules/@pump-fun/pump-sdk/dist/index.js';
 import {z} from 'zod';
 import {loadDeveloperWallet,developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
@@ -18,8 +18,20 @@ export function testCollateralAmount(inputToken,price){if(!Number.isFinite(price
 const activeSql="('preparing','signed','submitted','confirmed','unknown')";
 const safeError=e=>e?.safe===true?e.message:'Order could not be prepared. Check RPC, balances, API availability and transaction policy; no replacement order was sent.';
 function fail(message){throw Object.assign(Error(message),{safe:true});}
+export function verifyWalletSignature(tx,owner){
+ const expectedOwner=new PublicKey(owner);
+ if(!tx.message.staticAccountKeys[0]?.equals(expectedOwner))fail('Signing fee payer differs from the configured wallet. No transaction was submitted.');
+ const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),expectedOwner.toBuffer()]),format:'der',type:'spki'});
+ if(!verify(null,tx.message.serialize(),key,tx.signatures[0]))fail('Wallet signature failed local verification. No transaction was submitted.');
+}
+function hasZeroedWalletSignature(tx,owner){
+ try{verifyWalletSignature(tx,owner);return false;}catch{}
+ const zeroPublic=Keypair.fromSeed(new Uint8Array(32)).publicKey;
+ const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),zeroPublic.toBuffer()]),format:'der',type:'spki'});
+ return tx.message.staticAccountKeys[0]?.toBase58()===owner&&verify(null,tx.message.serialize(),key,tx.signatures[0]);
+}
 export function submissionDiagnostic(error){
- if(error instanceof JupiterSubmissionError)return 'Jupiter returned HTTP '+error.status+' — '+error.detail;
+ if(error instanceof JupiterSubmissionError)return 'Jupiter returned HTTP '+error.status+' - '+error.detail;
  const message=error instanceof Error?error.message:'',http=/^Upstream service returned HTTP ([45][0-9]{2})$/.exec(message);
  if(http)return 'Submission endpoint returned HTTP '+http[1]+'.';
  if(message==='Network request failed or timed out')return 'Submission endpoint timed out or could not be reached.';
@@ -147,6 +159,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   return {tx,expected,lastHeight:Number(quote.txMetadata.lastValidBlockHeight)};
  }
  async function submitPersisted(connection,row,expected){
+  verifyWalletSignature(VersionedTransaction.deserialize(Buffer.from(row.wire,'base64')),expected.owner);
   if(expected.instant){
    // The owner's fee-payer signature fixes the message and transaction ID even before keeper co-signing.
    // Never reconstruct the message or replace an ambiguous transaction.
@@ -159,7 +172,15 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   if(reconciling||closed)return;reconciling=true;
   try{
    const row=journal.active();if(!row||row.status==='preparing')return;
-   const c=await config(),expected=JSON.parse(row.expected);const connection=await verifiedConnection();
+   const c=await config(),expected=JSON.parse(row.expected);
+   const persisted=VersionedTransaction.deserialize(Buffer.from(row.wire,'base64'));
+   // The old loader signed with a cleared seed. Such bytes cannot authorize the actual fee payer.
+   // Retire only that cryptographically proven bug; other ambiguous orders remain locked.
+   if(hasZeroedWalletSignature(persisted,expected.owner)){
+    journal.pause(true,'An invalid pre-fix wallet signature was retired. Review and resume manually.');
+    journal.update(row.id,'failed','Retired invalid pre-fix signature: signed with a cleared seed, not the wallet key. These transaction bytes cannot execute. No replacement was submitted.');return;
+   }
+   const connection=await verifiedConnection();
    const result=(await connection.getSignatureStatuses([row.signature],{searchTransactionHistory:true})).value[0];
    if(result?.err&&result.confirmationStatus==='finalized'){journal.update(row.id,'failed','Transaction failed on-chain; no fill was created.');return;}
    if(result?.confirmationStatus==='finalized'){
@@ -220,6 +241,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(action.kind==='buyback')prepared.expected.cycle=action.cycle;
    if(action.kind==='open'&&env.PERPS_TEST_MODE==='true')prepared.expected.testMode=true;
    prepared.tx.sign([wallet]);
+   verifyWalletSignature(prepared.tx,c.vault);
    journal.signed(id,{expected:prepared.expected,wire:Buffer.from(prepared.tx.serialize()).toString('base64'),signature:base58(prepared.tx.signatures[0]),lastHeight:prepared.lastHeight});
   }catch(e){journal.update(id,'failed',safeError(e),'preparing');return status();}
   // A manual protective close is allowed while paused. Submit its persisted bytes once.

@@ -17,7 +17,8 @@ export function loadDeveloperWallet(secret:string|undefined):Keypair{
    for(const c of text){if(c!=='1')break;decoded.unshift(0);}
    if(decoded.length!==64)throw Error();bytes=Uint8Array.from(decoded);
   }
-  return Keypair.fromSecretKey(bytes);
+  // web3.js retains its input buffer. Keep an owned copy before clearing the decoder buffer.
+  return Keypair.fromSecretKey(Uint8Array.from(bytes));
  }catch{throw Error('Invalid developer wallet key. Use base58 or a JSON array of 64 bytes.');}
  finally{bytes?.fill(0);}
 }

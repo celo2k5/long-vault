@@ -111,3 +111,9 @@ Tests cover authentication, same-origin writes, encrypted key persistence/tamper
 - [Official Pump SDK](https://github.com/pump-fun/pump-public-docs)
 
 PFP is the supplied original image; accent is #2DD409. BTC/ETH icon license is in `public/coins/LICENSE.md`; SOL uses the green/purple three-bar mark.
+
+### Signing-key recovery (September 22, 2026)
+
+The wallet loader now copies decoded secret bytes before clearing its temporary buffer. The former shared buffer produced invalid wallet signatures despite reporting the correct public address. Wallet signatures are cryptographically verified before persistence and again before submission. Regression tests cover both JSON and base58 keys.
+
+The reconciler retires an old order only when its signature verifies against the cleared seed and fails against the actual fee payer. Those exact bytes cannot execute as the configured wallet. It marks the order failed and keeps automation paused; no replacement is automatically broadcast. Other uncertain transactions retain their reconciliation lock. After deployment, allow a reconciliation pass, inspect the order history, and resume manually. Existing saved wallet secrets do not need to be re-entered.

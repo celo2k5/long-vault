@@ -56,3 +56,17 @@ test('Jupiter execution reports bounded rejection details, redacts credentials a
  globalThis.fetch=(async(_url,init)=>{calls++;assert.equal(new Headers(init?.headers).get('x-perps-api-version'),'v2');assert.equal(init?.redirect,'error');return new Response(JSON.stringify({code:'bad_request',message:'Invalid signature private-test-key https://rpc.example/secret '+ 'A'.repeat(90),metadata:{secret:'metadata-must-not-leak'}}),{status:400});}) as typeof fetch;
  try{await assert.rejects(jupiter({JUPITER_API_KEY:'private-test-key'},'transaction/execute',{serializedTxBase64:'A'.repeat(90),action:'increase-position'}),e=>e instanceof JupiterSubmissionError&&e.status===400&&e.detail.includes('Invalid signature')&&!/private-test-key|rpc.example|metadata-must-not-leak|AAAA/.test(e.detail));assert.equal(calls,1);}finally{globalThis.fetch=original;}
 });
+
+test('loaded JSON and base58 wallet keys retain valid signing material after decoder cleanup',async()=>{
+ const {loadDeveloperWallet}=await import('../lib/dev-wallet.ts');
+ const {Keypair,TransactionMessage,VersionedTransaction}=await import('@solana/web3.js');
+ const {createPublicKey,verify}=await import('node:crypto');
+ const wallet=Keypair.generate(),alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+ let n=BigInt('0x'+Buffer.from(wallet.secretKey).toString('hex')),base58='';while(n){base58=alphabet[Number(n%BigInt(58))]+base58;n/=BigInt(58);}for(const b of wallet.secretKey){if(b)break;base58='1'+base58;}
+ for(const secret of [JSON.stringify([...wallet.secretKey]),base58]){
+  const loaded=loadDeveloperWallet(secret);assert.deepEqual(loaded.secretKey,wallet.secretKey);
+  const tx=new VersionedTransaction(new TransactionMessage({payerKey:wallet.publicKey,recentBlockhash:Keypair.generate().publicKey.toBase58(),instructions:[]}).compileToV0Message());tx.sign([loaded]);
+  const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),wallet.publicKey.toBuffer()]),format:'der',type:'spki'});
+  assert.equal(verify(null,tx.message.serialize(),key,tx.signatures[0]),true);
+ }
+});

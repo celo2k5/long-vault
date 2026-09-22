@@ -272,3 +272,19 @@ test('instant orders use keeper execution and retain the exact wallet-signed mes
  assert.match(submissionDiagnostic(Error('Jupiter returned an unexpected transaction signature.')),/persisted transaction signature/);
  assert.equal(submissionDiagnostic(Error('https://rpc.example/?key=secret signed-payload')), 'Submission response could not be verified.');
  });
+
+test('local signature verification rejects corrupt signing material and modified messages',async()=>{
+ const {verifyWalletSignature}=await import('../scripts/live-perps.mjs');const f=fixture(),tx=f.tx();tx.sign([f.wallet]);
+ assert.doesNotThrow(()=>verifyWalletSignature(tx,f.owner));
+ tx.signatures[0][0]^=1;assert.throws(()=>verifyWalletSignature(tx,f.owner),/failed local verification/);
+ tx.sign([f.wallet]);tx.message.recentBlockhash=Keypair.generate().publicKey.toBase58();assert.throws(()=>verifyWalletSignature(tx,f.owner),/failed local verification/);
+});
+
+test('reconciliation safely retires the proven zeroed-key signature without broadcasting or replacing it',async()=>{
+ const db=new DatabaseSync(':memory:'),f=fixture();
+ const tx=f.tx();tx.sign([{publicKey:f.owner,secretKey:new Uint8Array(64)}]);
+ const service=createLivePerps({sqlite:db,env:{},config:async()=>({...defaults,vault:f.owner.toBase58()}),dependencies:{rpc:()=>{assert.fail('Proven invalid signature does not need a broadcast or RPC lookup');}}});
+ try{service.journal.reserve('zeroed-old-order',{kind:'open',market:'SOL'});service.journal.signed('zeroed-old-order',{expected:f.expected,wire:Buffer.from(tx.serialize()).toString('base64'),signature:base58(tx.signatures[0]),lastHeight:100});
+ service.journal.pause(false);await service.reconcile();assert.equal(service.journal.get('zeroed-old-order').status,'failed');assert.match(service.journal.get('zeroed-old-order').message,/cleared seed/);assert.equal(service.journal.paused(),true);assert.equal(service.journal.active(),undefined);assert.equal(service.journal.list().length,1);
+ }finally{service.close();db.close();}
+});
