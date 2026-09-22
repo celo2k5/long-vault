@@ -18,6 +18,14 @@ export function testCollateralAmount(inputToken,price){if(!Number.isFinite(price
 const activeSql="('preparing','signed','submitted','confirmed','unknown')";
 const safeError=e=>e?.safe===true?e.message:'Order could not be prepared. Check RPC, balances, API availability and transaction policy; no replacement order was sent.';
 function fail(message){throw Object.assign(Error(message),{safe:true});}
+export function submissionDiagnostic(error){
+ const message=error instanceof Error?error.message:'',http=/^Upstream service returned HTTP ([45][0-9]{2})$/.exec(message);
+ if(http)return 'Submission endpoint returned HTTP '+http[1]+'.';
+ if(message==='Network request failed or timed out')return 'Submission endpoint timed out or could not be reached.';
+ if(message==='Jupiter returned an unexpected transaction signature.'||message==='RPC returned an unexpected signature.'||message==='Unexpected submission signature.')return 'Submission response did not match the persisted transaction signature.';
+ return 'Submission response could not be verified.';
+}
+
 export class TradeJournal{
  constructor(sqlite,log=()=>{}){this.db=sqlite;this.log=log;sqlite.exec(`CREATE TABLE IF NOT EXISTS live_control (id INTEGER PRIMARY KEY CHECK(id=1), paused INTEGER NOT NULL DEFAULT 1); INSERT OR IGNORE INTO live_control(id) VALUES(1);
  CREATE TABLE IF NOT EXISTS live_orders (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, market TEXT NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, expected TEXT, wire TEXT, signature TEXT, last_height INTEGER, message TEXT NOT NULL DEFAULT '');
@@ -142,7 +150,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    // The owner's fee-payer signature fixes the message and transaction ID even before keeper co-signing.
    // Never reconstruct the message or replace an ambiguous transaction.
    const result=await api('transaction/execute',{action:row.kind==='open'?'increase-position':'decrease-position',serializedTxBase64:row.wire});
-   if(typeof result.txid!=='string'||result.txid!==row.signature)fail('Jupiter returned an unexpected transaction signature.');return result.txid;
+   if(typeof result?.txid!=='string'||result.txid!==row.signature)fail('Jupiter returned an unexpected transaction signature.');return result.txid;
   }
   return connection.sendRawTransaction(Buffer.from(row.wire,'base64'),{skipPreflight:false,maxRetries:0,preflightCommitment:'confirmed'});
  }
@@ -184,7 +192,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(height>row.last_height){journal.pause(true,'Signature not found after expiry. New orders paused; reconcile with an archival RPC before retrying.');journal.update(row.id,'unknown','Signature not found after expiry. New orders paused; reconcile with an archival RPC before retrying.');return;}
    // Pausing stops fresh broadcasts, but still tracks already-submitted transactions.
    if(closed||journal.paused()||reasons(c).length||expected.owner!==c.vault)return;
-   try{const signature=await submitPersisted(connection,row,expected);if(signature!==row.signature)fail('RPC returned an unexpected signature.');journal.update(row.id,'submitted','Submitted; awaiting on-chain confirmation and keeper execution.');}catch{journal.update(row.id,'signed','Submission uncertain. Tracking the original signature; retries reuse identical signed bytes.');}
+   try{const signature=await submitPersisted(connection,row,expected);if(signature!==row.signature)fail('RPC returned an unexpected signature.');journal.update(row.id,'submitted','Submitted; awaiting on-chain confirmation and keeper execution.');}catch(e){journal.update(row.id,'signed','Submission uncertain. '+submissionDiagnostic(e)+' Tracking original signature '+row.signature+'; retries reuse identical signed bytes.');}
   }catch{
    // Provider errors never mark an ambiguous send as failed or leak secret URLs.
    if(!closed){const row=journal.active();if(row&&row.status!=='preparing')journal.update(row.id,row.status,'Chain verification unavailable. Original order retained; no replacement will be created.');}
@@ -215,7 +223,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   }catch(e){journal.update(id,'failed',safeError(e),'preparing');return status();}
   // A manual protective close is allowed while paused. Submit its persisted bytes once.
   if(action.kind==='close'&&journal.paused()){
-   const row=journal.get(id);try{const connection=await verifiedConnection();const signature=await submitPersisted(connection,row,JSON.parse(row.expected));if(signature!==row.signature)fail('Unexpected submission signature.');journal.update(id,'submitted','Close submitted; awaiting keeper execution.');}catch{journal.update(id,'signed','Close submission uncertain; original signature retained. Resume to allow identical-byte retries.');}
+   const row=journal.get(id);try{const connection=await verifiedConnection();const signature=await submitPersisted(connection,row,JSON.parse(row.expected));if(signature!==row.signature)fail('Unexpected submission signature.');journal.update(id,'submitted','Close submitted; awaiting keeper execution.');}catch(e){journal.update(id,'signed','Close submission uncertain. '+submissionDiagnostic(e)+' Original signature '+row.signature+' retained. Resume to allow identical-byte retries.');}
   }else await reconcile();
   return status();
  }

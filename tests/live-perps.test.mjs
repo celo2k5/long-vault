@@ -264,3 +264,11 @@ test('instant orders use keeper execution and retain the exact wallet-signed mes
  let service=createLivePerps({sqlite:db,env,config,dependencies});
  try{await service.execute({kind:'resume'});await service.execute({kind:'open',market:'SOL'},'instant-order');assert.equal(service.journal.get('instant-order').status,'signed');service.close();service=createLivePerps({sqlite:db,env,config,dependencies});await service.reconcile();assert.equal(sent.length,2);assert.equal(sent[0],sent[1]);}finally{service.close();db.close();}
 });
+
+ test('submission diagnostics expose HTTP status without provider secrets',async()=>{
+ const {submissionDiagnostic}=await import('../scripts/live-perps.mjs');
+ assert.match(submissionDiagnostic(Error('Upstream service returned HTTP 429')),/HTTP 429/);
+ assert.match(submissionDiagnostic(Error('Network request failed or timed out')),/timed out/);
+ assert.match(submissionDiagnostic(Error('Jupiter returned an unexpected transaction signature.')),/persisted transaction signature/);
+ assert.equal(submissionDiagnostic(Error('https://rpc.example/?key=secret signed-payload')), 'Submission response could not be verified.');
+ });

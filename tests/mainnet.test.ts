@@ -43,3 +43,10 @@ test('mainnet verification accepts the full cluster hash and rejects truncated o
  await assert.rejects(confirmedMainnet({getGenesisHash:async()=>'5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'} as never),/not Solana mainnet/);
  await assert.rejects(confirmedMainnet({getGenesisHash:async()=>'EtWTRABZaYq6iMfeYKouRu166VU2xqa1'} as never),/not Solana mainnet/);
 });
+
+ test('execution transport leaves retries to the persisted-order reconciler',async()=>{
+ let attempts=0;
+ const fetcher=(async()=>{attempts++;return new Response('{}',{status:503});}) as typeof fetch;
+ await assert.rejects(boundedFetch('https://example.com',{},fetcher,1),/HTTP 503/);
+ assert.equal(attempts,1);
+ });

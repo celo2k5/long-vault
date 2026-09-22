@@ -29,14 +29,14 @@ export function parsePositions(raw:unknown):ChainPosition[]{
  });
 }
 export function perpsBase(env:LiveEnvironment){const u=env.JUPITER_API_URL||'https://perps-api.jup.ag/v2';if(u!=='https://perps-api.jup.ag/v2')throw Error('JUPITER_API_URL must be the official https://perps-api.jup.ag/v2 endpoint');return u;}
-export async function boundedFetch(input:RequestInfo|URL,init:RequestInit={},fetcher:typeof fetch=fetch):Promise<Response>{
+export async function boundedFetch(input:RequestInfo|URL,init:RequestInit={},fetcher:typeof fetch=fetch,maxAttempts=3):Promise<Response>{
  // Retry only reads or unsigned construction, never signing or broadcasting.
- for(let attempt=0;attempt<3;attempt++){
+ for(let attempt=0;attempt<maxAttempts;attempt++){
   try{const response=await fetcher(input,{...init,redirect:'error',signal:AbortSignal.timeout(12000)});
-   if((response.status===429||response.status>=500)&&attempt<2){await response.body?.cancel();await new Promise(r=>setTimeout(r,200*(attempt+1)));continue;}
+   if((response.status===429||response.status>=500)&&attempt<maxAttempts-1){await response.body?.cancel();await new Promise(r=>setTimeout(r,200*(attempt+1)));continue;}
    if(!response.ok){await response.body?.cancel();throw Error('Upstream service returned HTTP '+response.status);}
    return response;
-  }catch(e){if(attempt===2||e instanceof Error&&e.message.startsWith('Upstream'))throw Error(e instanceof Error&&e.message.startsWith('Upstream')?e.message:'Network request failed or timed out');}
+  }catch(e){if(attempt===maxAttempts-1||e instanceof Error&&e.message.startsWith('Upstream'))throw Error(e instanceof Error&&e.message.startsWith('Upstream')?e.message:'Network request failed or timed out');}
  }throw Error('Network request failed');
 }
 async function json(response:Response){const reader=response.body?.getReader();if(!reader)throw Error('Empty service response');let text='',bytes=0;const decoder=new TextDecoder();try{while(true){const r=await reader.read();if(r.done)break;bytes+=r.value.length;if(bytes>2_000_000)throw Error('Oversized service response');text+=decoder.decode(r.value,{stream:true});}text+=decoder.decode();return JSON.parse(text);}finally{await reader.cancel();}}
@@ -47,7 +47,7 @@ export function rpcConnection(env:LiveEnvironment){
  return new Connection(url.toString(),{commitment:'confirmed',disableRetryOnRateLimit:true,fetch:(input,init)=>boundedFetch(input,init)});
 }
 export async function jupiter(env:LiveEnvironment,path:string,body?:unknown){
- const response=await boundedFetch(perpsBase(env)+'/'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-client-platform':'long-vault',...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{})},...(body?{body:JSON.stringify(body)}:{})});
+ const response=await boundedFetch(perpsBase(env)+'/'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-client-platform':'long-vault',...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{})},...(body?{body:JSON.stringify(body)}:{})},fetch,path==='transaction/execute'?1:3);
  return json(response);
 }
 export async function confirmedMainnet(connection:Connection){if(await connection.getGenesisHash()!==MAINNET_GENESIS)throw Error('RPC is not Solana mainnet; Jupiter perpetuals require mainnet');}
