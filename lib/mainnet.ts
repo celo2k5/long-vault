@@ -46,9 +46,27 @@ export function rpcConnection(env:LiveEnvironment){
  if(url.protocol!=='https:'||url.username||url.password||url.hash)throw Error('RPC requires an HTTPS URL without user information or fragment');
  return new Connection(url.toString(),{commitment:'confirmed',disableRetryOnRateLimit:true,fetch:(input,init)=>boundedFetch(input,init)});
 }
+export class JupiterSubmissionError extends Error {
+ status:number;detail:string;
+ constructor(status:number,detail:string){super('Upstream service returned HTTP '+status);this.status=status;this.detail=detail;}
+}
+function submissionDetail(raw:unknown,env:LiveEnvironment,request:unknown){
+ const value=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
+ let detail=[typeof value.code==='string'?value.code:'',typeof value.message==='string'?value.message:''].filter(Boolean).join(': ');
+ // Keep only bounded public error text. Never retain metadata, request bytes, keys or provider URLs.
+ const wire=request&&typeof request==='object'?(request as Record<string,unknown>).serializedTxBase64:undefined;
+ for(const secret of [...Object.values(env),wire])if(typeof secret==='string'&&secret.length>3)detail=detail.split(secret).join('[redacted]');
+ return detail.replace(/https?:\/\/[^\s]+/gi,'[URL hidden]').replace(/bearer\s+[^\s]+/gi,'Bearer [redacted]').replace(/[A-Za-z0-9+/_=-]{40,}/g,'[data hidden]').replace(/[\x00-\x1f\x7f]/g,' ').slice(0,400)||'No public error detail returned.';
+}
 export async function jupiter(env:LiveEnvironment,path:string,body?:unknown){
- const response=await boundedFetch(perpsBase(env)+'/'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-client-platform':'long-vault',...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{})},...(body?{body:JSON.stringify(body)}:{})},fetch,path==='transaction/execute'?1:3);
- return json(response);
+ const url=perpsBase(env)+'/'+path,init:RequestInit={method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-client-platform':'long-vault','x-perps-api-version':'v2',...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{})},...(body?{body:JSON.stringify(body)}:{})};
+ if(path==='transaction/execute'){
+  let response:Response;
+  try{response=await fetch(url,{...init,redirect:'error',signal:AbortSignal.timeout(12000)});}catch{throw Error('Network request failed or timed out');}
+  if(!response.ok){let raw:unknown;try{raw=await json(response);}catch{}throw new JupiterSubmissionError(response.status,submissionDetail(raw,env,body));}
+  return json(response);
+ }
+ return json(await boundedFetch(url,init));
 }
 export async function confirmedMainnet(connection:Connection){if(await connection.getGenesisHash()!==MAINNET_GENESIS)throw Error('RPC is not Solana mainnet; Jupiter perpetuals require mainnet');}
 export async function readMainnet(config:Config,env:LiveEnvironment):Promise<MainnetReport>{

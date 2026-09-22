@@ -3,7 +3,7 @@ import {PublicKey,VersionedTransaction,TransactionMessage,ComputeBudgetProgram} 
 import pumpSdk from '../node_modules/@pump-fun/pump-sdk/dist/index.js';
 import {z} from 'zod';
 import {loadDeveloperWallet,developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
-import {rpcConnection,jupiter,parsePositions,readMainnet,MAINNET_GENESIS} from '../.sites-runtime/lib/mainnet.mjs';
+import {rpcConnection,jupiter,parsePositions,readMainnet,MAINNET_GENESIS,JupiterSubmissionError} from '../.sites-runtime/lib/mainnet.mjs';
 import {validateConfig,MARKETS} from '../.sites-runtime/lib/engine.mjs';
 import {PERPS,USDC,associated,positionAddress,inspectPerpsTransaction,decodeRequest,discriminator} from './perps-policy.mjs';
 
@@ -19,6 +19,7 @@ const activeSql="('preparing','signed','submitted','confirmed','unknown')";
 const safeError=e=>e?.safe===true?e.message:'Order could not be prepared. Check RPC, balances, API availability and transaction policy; no replacement order was sent.';
 function fail(message){throw Object.assign(Error(message),{safe:true});}
 export function submissionDiagnostic(error){
+ if(error instanceof JupiterSubmissionError)return 'Jupiter returned HTTP '+error.status+' — '+error.detail;
  const message=error instanceof Error?error.message:'',http=/^Upstream service returned HTTP ([45][0-9]{2})$/.exec(message);
  if(http)return 'Submission endpoint returned HTTP '+http[1]+'.';
  if(message==='Network request failed or timed out')return 'Submission endpoint timed out or could not be reached.';

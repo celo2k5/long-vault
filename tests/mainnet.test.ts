@@ -50,3 +50,9 @@ test('mainnet verification accepts the full cluster hash and rejects truncated o
  await assert.rejects(boundedFetch('https://example.com',{},fetcher,1),/HTTP 503/);
  assert.equal(attempts,1);
  });
+
+test('Jupiter execution reports bounded rejection details, redacts credentials and never retries internally',async()=>{
+ const {jupiter,JupiterSubmissionError}=await import('../lib/mainnet.ts');const original=globalThis.fetch;let calls=0;
+ globalThis.fetch=(async(_url,init)=>{calls++;assert.equal(new Headers(init?.headers).get('x-perps-api-version'),'v2');assert.equal(init?.redirect,'error');return new Response(JSON.stringify({code:'bad_request',message:'Invalid signature private-test-key https://rpc.example/secret '+ 'A'.repeat(90),metadata:{secret:'metadata-must-not-leak'}}),{status:400});}) as typeof fetch;
+ try{await assert.rejects(jupiter({JUPITER_API_KEY:'private-test-key'},'transaction/execute',{serializedTxBase64:'A'.repeat(90),action:'increase-position'}),e=>e instanceof JupiterSubmissionError&&e.status===400&&e.detail.includes('Invalid signature')&&!/private-test-key|rpc.example|metadata-must-not-leak|AAAA/.test(e.detail));assert.equal(calls,1);}finally{globalThis.fetch=original;}
+});
