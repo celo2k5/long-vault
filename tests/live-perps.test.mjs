@@ -288,3 +288,27 @@ test('reconciliation safely retires the proven zeroed-key signature without broa
  service.journal.pause(false);await service.reconcile();assert.equal(service.journal.get('zeroed-old-order').status,'failed');assert.match(service.journal.get('zeroed-old-order').message,/cleared seed/);assert.equal(service.journal.paused(),true);assert.equal(service.journal.active(),undefined);assert.equal(service.journal.list().length,1);
  }finally{service.close();db.close();}
 });
+
+test('writable keeper is limited to close cleanup and never the API keeper',async()=>{
+ const {checkKeeperPermissions}=await import('../scripts/instant-perps.mjs');
+ const keeper=Keypair.generate().publicKey.toBase58(),decoded=[{name:'closePositionRequest2',a:{keeper}}],tx={message:{isAccountWritable:i=>i===1}};
+ assert.doesNotThrow(()=>checkKeeperPermissions(tx,decoded,'close',2,1,keeper));
+ assert.throws(()=>checkKeeperPermissions(tx,decoded,'open',2,1,keeper),/writable keeper/);
+ assert.throws(()=>checkKeeperPermissions(tx,[],'close',2,1,keeper),/writable keeper/);
+ assert.throws(()=>checkKeeperPermissions({message:{isAccountWritable:()=>true}},decoded,'close',2,1,keeper),/API keeper/);
+ assert.throws(()=>checkKeeperPermissions(tx,[...decoded,{name:'instantDecreasePosition',a:{receivingAccount:keeper}}],'close',2,1,keeper),/authorized role/);
+});
+test('close cleanup verifies request ownership, PDA and refund destination',async()=>{
+ const {inspectCloseCleanup}=await import('../scripts/instant-perps.mjs');const {createRequire}=await import('node:module');const {BorshCoder,BN}=createRequire(import.meta.url)('@coral-xyz/anchor');
+ const coder=new BorshCoder(JSON.parse(readFileSync(new URL('../vendor/perps-idl.json',import.meta.url)))),f=fixture();
+ const counter=Buffer.alloc(8);counter.writeBigUInt64LE(7n);const request=pda([Buffer.from('position_request'),new PublicKey(f.expected.position).toBuffer(),counter,Buffer.from([2])]);
+ const a={owner:f.expected.owner,position:f.expected.position,pool:POOL.toBase58(),mint:USDC.toBase58(),ownerAta:associated(f.owner).toBase58(),positionRequest:request.toBase58(),positionRequestAta:associated(request).toBase58(),custody:CUSTODY[f.expected.market]};
+ const record={owner:f.owner,pool:POOL,custody:new PublicKey(a.custody),position:new PublicKey(a.position),mint:USDC,openTime:new BN(0),updateTime:new BN(0),sizeUsdDelta:new BN(1),collateralDelta:new BN(0),requestChange:{Decrease:{}},requestType:{Trigger:{}},side:{Long:{}},priceSlippage:null,jupiterMinimumOut:null,preSwapAmount:null,triggerPrice:new BN(1),triggerAboveThreshold:true,entirePosition:true,executed:false,counter:new BN(7),bump:0,referral:null};
+ const data=await coder.accounts.encode('PositionRequest',record),rpc={getAccountInfo:async()=>({owner:PERPS,data})};
+ await inspectCloseCleanup(a,f.expected,rpc);
+ await assert.rejects(inspectCloseCleanup({...a,ownerAta:Keypair.generate().publicKey.toBase58()},f.expected,rpc),/refund destination/);
+ const badData=await coder.accounts.encode('PositionRequest',{...record,owner:Keypair.generate().publicKey});
+ await assert.rejects(inspectCloseCleanup(a,f.expected,{getAccountInfo:async()=>({owner:PERPS,data:badData})}),/authority mismatch/);
+ await assert.rejects(inspectCloseCleanup(a,f.expected,{getAccountInfo:async()=>null}),/unavailable/);
+ const other=Keypair.generate().publicKey;await assert.rejects(inspectCloseCleanup({...a,positionRequest:other.toBase58(),positionRequestAta:associated(other).toBase58()},f.expected,rpc),/PDA mismatch/);
+});

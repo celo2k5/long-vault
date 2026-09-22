@@ -9,12 +9,31 @@ const API_KEEPER='perpSnt3NivMdD5DRFc7VmW6x7PuvQJGNyDTL74mEYx';
 const MINTS={SOL:SOL.toBase58(),BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',ETH:'7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs'};
 const check=(ok,message)=>{if(!ok)throw Error('Transaction rejected: '+message);};
 const big=n=>BigInt(n.toString());
+const CLEANUP=['closePositionRequest2','closePositionRequest3'];
+export function checkKeeperPermissions(tx,decoded,kind,apiIndex,keeperIndex,keeper){
+ check(!tx.message.isAccountWritable(apiIndex),'API keeper must be read-only');
+ if(tx.message.isAccountWritable(keeperIndex))check(kind==='close'&&decoded.some(x=>CLEANUP.includes(x.name)&&x.a.keeper===keeper),'writable keeper requires validated close-request cleanup');
+ for(const x of decoded)for(const [name,address]of Object.entries(x.a))if(address===keeper)check(name==='keeper','keeper used outside its authorized role');
+}
+export async function inspectCloseCleanup(a,e,connection,newRequests=[]){
+ check(a.owner===e.owner&&a.position===e.position&&a.pool===POOL.toBase58(),'cleanup owner or position mismatch');
+ check(a.mint===USDC.toBase58()&&a.ownerAta===associated(e.owner).toBase58(),'cleanup refund destination mismatch');
+ const request=new PublicKey(a.positionRequest);
+ check(a.positionRequestAta===associated(request).toBase58(),'cleanup escrow mismatch');
+ if(a.custody)check(a.custody===CUSTODY[e.market],'cleanup custody mismatch');
+ if(newRequests.some(r=>r.address===a.positionRequest&&!r.trigger))return;
+ const info=await connection.getAccountInfo(request);check(info?.owner.equals(PERPS),'cleanup request unavailable or invalid');
+ const r=coder.accounts.decode('PositionRequest',info.data);
+ check(r.owner.toBase58()===e.owner&&r.position.toBase58()===e.position&&r.pool.equals(POOL)&&r.custody.toBase58()===CUSTODY[e.market]&&r.mint.equals(USDC),'cleanup request authority mismatch');
+ check('Decrease'in r.requestChange&&'Trigger'in r.requestType&&'Long'in r.side,'cleanup must target this long position TP/SL');
+ const counter=Buffer.alloc(8);counter.writeBigUInt64LE(big(r.counter));
+ check(pda([Buffer.from('position_request'),new PublicKey(e.position).toBuffer(),counter,Buffer.from([2])]).equals(request),'cleanup request PDA mismatch');
+}
 export async function inspectInstantTransaction(tx,tables,e,connection){
  const owner=new PublicKey(e.owner),message=TransactionMessage.decompile(tx.message,{addressLookupTableAccounts:tables});
  check(tx.message.header.numRequiredSignatures===3&&tx.message.staticAccountKeys[0].equals(owner),'instant fee payer or signer count mismatch');
  const signers=tx.message.staticAccountKeys.slice(0,3).map(k=>k.toBase58()),apiIndex=signers.indexOf(API_KEEPER),keeper=signers.find(k=>k!==e.owner&&k!==API_KEEPER);
  check(apiIndex>0&&keeper&&tx.signatures[0].every(b=>!b),'unexpected instant signer');
- check(!tx.message.isAccountWritable(1)&&!tx.message.isAccountWritable(2),'keeper must be read-only');
  const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),new PublicKey(API_KEEPER).toBuffer()]),format:'der',type:'spki'});
  check(verify(null,tx.message.serialize(),key,tx.signatures[apiIndex]),'invalid Jupiter API keeper signature');
  check(tx.signatures[signers.indexOf(keeper)].every(b=>!b),'unexpected existing keeper signature');
@@ -24,8 +43,10 @@ export async function inspectInstantTransaction(tx,tables,e,connection){
   const def=idl.instructions.find(i=>i.name===decoded.name);check(def.accounts.length===ix.keys.length,'unknown instant account layout');
   return {ix,name:decoded.name,p:decoded.data.params,a:Object.fromEntries(def.accounts.map((a,i)=>[a.name,ix.keys[i].pubkey.toBase58()]))};
  });
- const allowed=e.kind==='open'?['setTokenLedger','instantIncreasePositionPreSwap','instantIncreasePosition','instantCreateTpsl']:['instantDecreasePosition','instantDecreasePosition2'];
+ const allowed=e.kind==='open'?['setTokenLedger','instantIncreasePositionPreSwap','instantIncreasePosition','instantCreateTpsl']:['instantDecreasePosition','instantDecreasePosition2',...CLEANUP];
  check(decoded.every(x=>allowed.includes(x.name)),'unsupported instant instruction');
+ checkKeeperPermissions(tx,decoded,e.kind,apiIndex,signers.indexOf(keeper),keeper);
+ const cleanupRequests=new Set();
  const custodyKeys=[...new Set(decoded.flatMap(x=>Object.entries(x.a).filter(([n])=>/^(custody|collateralCustody|receivingCustody|dispensingCustody)$/.test(n)).map(([,v])=>v)))];
  const custodyInfos=await connection.getMultipleAccountsInfo(custodyKeys.map(k=>new PublicKey(k)));
  const custodies=new Map(custodyKeys.map((k,i)=>{const info=custodyInfos[i];check(info?.owner.equals(PERPS),'invalid custody owner');return [k,coder.accounts.decode('Custody',info.data)];}));
@@ -37,6 +58,10 @@ export async function inspectInstantTransaction(tx,tables,e,connection){
    const c=custodies.get(a[prefix]);check(c.pool.toBase58()===POOL.toBase58(),'custody pool mismatch');
    if(a[prefix+'TokenAccount'])check(a[prefix+'TokenAccount']===c.tokenAccount.toBase58(),'custody token destination mismatch');
    for(const suffix of ['DovesPriceAccount','PythnetPriceAccount'])if(a[prefix+suffix])check([c.dovesOracle?.toBase58(),c.dovesAgOracle?.toBase58(),c.oracle?.oracleAccount?.toBase58()].includes(a[prefix+suffix]),'custody oracle mismatch');
+  }
+  if(CLEANUP.includes(name)){
+   check(!cleanupRequests.has(a.positionRequest)&&cleanupRequests.size<8,'duplicate or excessive close cleanup');
+   await inspectCloseCleanup(a,e,connection,requests);cleanupRequests.add(a.positionRequest);continue;
   }
   if(p?.requestTime)check(Math.abs(Number(p.requestTime.toString())-Date.now()/1000)<180,'instant quote is stale');
   if(name==='setTokenLedger'){check(++ledgers===1&&a.tokenAccount===funding,'unexpected token ledger');ledger=a.tokenLedger;const info=await connection.getAccountInfo(new PublicKey(ledger));check(info?.owner.equals(PERPS),'invalid token ledger owner');continue;}
