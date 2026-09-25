@@ -88,13 +88,13 @@ test('cycle allocations are fixed before the first trade and survive partial pro
  const config=async()=>({...defaults,vault:f.owner.toBase58(),tokenMint:USDC.toBase58()});
  const connection={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getMultipleAccountsInfo(){return [null,null,null];},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(bytes){return base58(VersionedTransaction.deserialize(bytes).signatures[0]);}};
  let balance=100;
- const dependencies={rpc:()=>connection,api:async()=>({count:0,dataList:[]}),report:async()=>({creator:f.owner.toBase58(),rewardsSol:0,walletSol:0.15,usdc:balance,prices:{SOL:100}}),prepare:async action=>{prepared.push(action);return {tx:f.tx(),expected:f.expected,lastHeight:100};}};
+ const dependencies={rpc:()=>connection,api:async()=>({count:0,dataList:[]}),report:async()=>({creator:f.owner.toBase58(),rewardsSol:0,walletSol:0.15+balance/100,usdc:0,prices:{SOL:100}}),prepare:async action=>{prepared.push(action);return {tx:f.tx(),expected:f.expected,lastHeight:100};}};
  const service=createLivePerps({sqlite:db,env,config,dependencies});
  try{
-  await service.execute({kind:'resume'});await service.advanceCycle();let state=(await service.status()).cycle;assert.equal(state.phase,'opening');assert.deepEqual(state.plans.map(p=>p.budget),[40000000,30000000,30000000]);
-  await service.advanceCycle();assert.equal(prepared.length,1);assert.equal(prepared[0].budget,40000000);
+  await service.execute({kind:'resume'});await service.advanceCycle();let state=(await service.status()).cycle;assert.equal(state.phase,'opening');assert.deepEqual(state.plans.map(p=>p.budget),[400000000,300000000,300000000]);
+  await service.advanceCycle();assert.equal(prepared.length,1);assert.equal(prepared[0].budget,400000000);
   balance=60;service.journal.update(state.id+'-0','filled','test adapter reports a verified fill');await service.advanceCycle();await service.advanceCycle();
-  assert.equal(prepared.length,2);assert.equal(prepared[1].budget,30000000);assert.equal(prepared[1].market,'ETH');
+  assert.equal(prepared.length,2);assert.equal(prepared[1].budget,300000000);assert.equal(prepared[1].market,'ETH');
   service.journal.update(state.id+'-1','failed','test adapter rejects insufficient collateral');await service.advanceCycle();assert.equal(service.journal.paused(),true);assert.equal((await service.status()).cycle.phase,'error');
  }finally{service.close();db.close();}
 });
@@ -118,7 +118,7 @@ test('real order preparation validates quote, chain accounts and simulation befo
    return {positionPubkey:f.position.toBase58(),serializedTxBase64:Buffer.from(tx.serialize()).toString('base64'),txMetadata:{blockhash:PublicKey.default.toBase58(),lastValidBlockHeight:'100'},quote:{side:'long',sizeUsdDelta:'50000000',averagePriceUsd:'100000000',liquidationPriceUsd:'70000000',leverage:'5'}};
   };
   const service=createLivePerps({sqlite:db,env:{ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',JUPITER_API_KEY:'test-only-api-key',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])},config,dependencies:{rpc:()=>connection,api}});
-  try{await service.execute({kind:'resume'});const result=await service.execute({kind:'open',market:'SOL'},'validated-order');assert.equal(result.orders[0].status,tamper?'failed':'submitted',result.orders[0].message);assert.equal(sends,tamper?0:1);assert.equal(simulations,tamper?0:1);}finally{service.close();db.close();}
+  try{await service.execute({kind:'resume'});const result=await service.execute({kind:'open',market:'SOL',inputToken:'USDC'},'validated-order');assert.equal(result.orders[0].status,tamper?'failed':'submitted',result.orders[0].message);assert.equal(sends,tamper?0:1);assert.equal(simulations,tamper?0:1);}finally{service.close();db.close();}
  }
 });
 
@@ -213,7 +213,7 @@ test('token-free position tests enforce fixed collateral and never start automat
   const state=await service.execute({kind:'resume'});assert.equal(state.enabled,true);assert.equal(state.testMode,true);
   await service.advanceCycle();assert.equal(actions.length,0);
   await assert.rejects(service.execute({kind:'claim',market:'SOL'},'test-claim'),/disabled in position test mode/);
-  await service.execute({kind:'open',market:'SOL',budget:999999999},'test-no-token');assert.equal(actions[0].budget,10000000);assert.equal(actions[0].inputToken,'USDC');assert.equal(JSON.parse(service.journal.get('test-no-token').expected).testMode,true);
+  await service.execute({kind:'open',market:'SOL',budget:999999999},'test-no-token');assert.equal(actions[0].budget,undefined);assert.equal(actions[0].inputToken,'SOL');assert.equal(actions[0].testCollateralUsd,10);assert.equal(JSON.parse(service.journal.get('test-no-token').expected).testMode,true);
   service.journal.update('test-no-token','filled','Test fill');assert.equal(service.hasUnsettledCycle(),true);
  }finally{service.close();db.close();}
 });
@@ -322,4 +322,66 @@ test('collateral-conversion closes fail with actionable diagnostics without perm
  assert.throws(()=>checkInstantInstructions([{name:'instantIncreasePosition'}],'close'),/unsupported instant instruction for close: instantIncreasePosition/);
  assert.throws(()=>checkInstantInstructions(route,'open'),/unsupported instant instruction for open/);
  assert.doesNotThrow(()=>checkInstantInstructions([{name:'instantDecreasePosition'},{name:'closePositionRequest2'}],'close'));
+});
+
+
+test('protected native-collateral closes preserve price bounds and reject diverted payouts',async()=>{
+ const {prepareProtectedClose}=await import('../scripts/protected-close.mjs');
+ for(const market of ['BTC','ETH','SOL']){
+  const f=fixture(),receiveMint={BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',ETH:'7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',SOL:'So11111111111111111111111111111111111111112'}[market];
+  const e={...f.expected,kind:'close',market,position:positionAddress(f.owner,market).toBase58(),receiveMint};
+  const r=await prepareProtectedClose({getLatestBlockhash:async()=>({blockhash:PublicKey.default.toBase58(),lastValidBlockHeight:100})},e);
+  const checked=inspectPerpsTransaction(r.tx,[],e);assert.equal(checked.requests.length,1);assert.equal(checked.requests[0].mint,receiveMint);assert.equal(checked.requests[0].trigger,false);
+  await assert.rejects(prepareProtectedClose({getLatestBlockhash:async()=>({blockhash:PublicKey.default.toBase58(),lastValidBlockHeight:100})},{...e,receiveMint:Keypair.generate().publicKey.toBase58()}),/unapproved payout/);
+  assert.throws(()=>inspectPerpsTransaction(r.tx,[],{...e,minPrice:e.minPrice+1}),/closing slippage/);
+  const m=TransactionMessage.decompile(r.tx.message);m.instructions.at(-1).keys[1].pubkey=associated(Keypair.generate().publicKey,new PublicKey(receiveMint));
+  assert.throws(()=>inspectPerpsTransaction(new VersionedTransaction(m.compileToV0Message()),[],e),/destination/);
+ }
+});
+
+test('SOL cycle converts confirmed USDC payouts before buyback and does not duplicate swaps after restart',async()=>{
+ const db=new DatabaseSync(':memory:'),f=fixture(),owner=f.owner.toBase58(),request=f.expected.position,mint=Keypair.generate().publicKey.toBase58(),solMint='So11111111111111111111111111111111111111112';
+ const env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])};
+ const config=async()=>({...defaults,vault:owner,tokenMint:mint});const prepared=[];let receipt;
+ const rpc={async getGenesisHash(){return '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';},async getAccountInfo(){return null;},async getSignaturesForAddress(){return [{signature:'close-fill',err:null}];},async getTransaction(sig){return sig==='close-fill'?payout(owner,request,150000000):receipt;},async getSignatureStatuses(){return {value:[null]};},async getBlockHeight(){return 1;},async sendRawTransaction(){throw Error('uncertain');}};
+ const dependencies={rpc:()=>rpc,prepare:async action=>{prepared.push(action);return {tx:f.tx(),lastHeight:100,expected:{kind:action.kind,owner,amount:action.amount,sourceMint:action.sourceMint||solMint,source:associated(owner,action.kind==='settle'?USDC:new PublicKey(solMint)).toBase58(),destination:associated(owner,new PublicKey(action.kind==='settle'?solMint:mint)).toBase58(),mint:action.kind==='settle'?solMint:mint,minimum:'1',requests:[]}};}};
+ let service=createLivePerps({sqlite:db,env,config,dependencies});
+ try{
+  service.journal.reserve('sol-cycle-0',{kind:'open',market:'SOL'});service.journal.signed('sol-cycle-0',{expected:{...f.expected,requests:[{address:request,trigger:true}]},wire:'none',signature:'open',lastHeight:1});service.journal.update('sol-cycle-0','filled','open');
+  db.prepare('UPDATE live_cycle SET state=?').run(JSON.stringify({id:'sol-cycle',phase:'watching',owner,mint,plans:[{market:'SOL'}],profit:{currency:'SOL',principal:'1000000000',feeReserve:'100000000',percent:75,settled:[],sequence:0}}));
+  await service.execute({kind:'resume'});await service.advanceCycle();assert.equal(prepared[0].kind,'settle');assert.equal(prepared[0].amount,'150000000');assert.equal(prepared[0].outputMint,solMint);
+  service.close();service=createLivePerps({sqlite:db,env,config,dependencies});await service.advanceCycle();assert.equal(prepared.length,1);
+  const row=service.journal.active(),e=JSON.parse(row.expected);
+  receipt={transaction:{message:{staticAccountKeys:[new PublicKey(e.source),new PublicKey(e.destination)]}},meta:{err:null,preTokenBalances:[{accountIndex:0,mint:USDC.toBase58(),owner,uiTokenAmount:{amount:'150000000'}}],postTokenBalances:[{accountIndex:0,mint:USDC.toBase58(),owner,uiTokenAmount:{amount:'0'}},{accountIndex:1,mint:solMint,owner,uiTokenAmount:{amount:'1500000000'}}]}};
+  rpc.getSignatureStatuses=async()=>({value:[{confirmationStatus:'finalized',err:null}]});await service.reconcile();assert.equal(service.journal.get(row.id).status,'filled');
+  rpc.getSignatureStatuses=async()=>({value:[null]});await service.advanceCycle();assert.equal(prepared.length,2);assert.equal(prepared[1].kind,'buyback');assert.equal(prepared[1].inputToken,'SOL');assert.equal(prepared[1].amount,'300000000');
+ }finally{service.close();db.close();}
+});
+
+
+test('native collateral receipts bind the mint, owner and request escrow',()=>{
+ const owner=Keypair.generate().publicKey.toBase58(),request=Keypair.generate().publicKey.toBase58(),mint=new PublicKey('3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh');
+ const t=payout(owner,request,50000);t.transaction.message.staticAccountKeys[3]=associated(request,mint);t.transaction.message.staticAccountKeys[4]=associated(owner,mint);
+ for(const list of [t.meta.preTokenBalances,t.meta.postTokenBalances])for(const b of list)b.mint=mint.toBase58();
+ assert.equal(closeReceipt(t,owner,request,mint),50000n);assert.equal(closeReceipt(t,owner,request),0n);
+ t.meta.postTokenBalances[0].owner=Keypair.generate().publicKey.toBase58();assert.throws(()=>closeReceipt(t,owner,request,mint),/authority/);
+});
+
+test('SOL unwrap validates the wallet authority and actual finalized return',async()=>{
+ const {prepareUnwrap,verifyUnwrapReceipt}=await import('../scripts/buybacks.mjs');const sol=new PublicKey('So11111111111111111111111111111111111111112'),owner=Keypair.generate().publicKey,source=associated(owner,sol),data=Buffer.alloc(165);sol.toBuffer().copy(data);owner.toBuffer().copy(data,32);data.writeBigUInt64LE(1000000000n,64);
+ const rpc={getAccountInfo:async()=>({owner:TOKEN,data,lamports:1002039280}),getLatestBlockhash:async()=>({blockhash:PublicKey.default.toBase58(),lastValidBlockHeight:100}),getFeeForMessage:async()=>({value:5000}),getBalance:async()=>50000000,simulateTransaction:async()=>({value:{err:null,accounts:[{lamports:1052034280},null]}})};
+ const prepared=await prepareUnwrap(rpc,owner.toBase58());assert.equal(prepared.tx.message.header.numRequiredSignatures,1);
+ const receipt={transaction:{message:{staticAccountKeys:[owner,source]}},meta:{err:null,fee:5000,preBalances:[50000000,1002039280],postBalances:[1052034280,0]}};
+ verifyUnwrapReceipt(receipt,prepared.expected);receipt.meta.postBalances[0]-=1;assert.throws(()=>verifyUnwrapReceipt(receipt,prepared.expected),/does not return/);
+ data.writeUInt32LE(1,72);await assert.rejects(prepareUnwrap(rpc,owner.toBase58()),/authority/);
+});
+
+test('automatic close uses the saved target once and retains the original order across restart',async()=>{
+ const db=new DatabaseSync(':memory:'),f=fixture(),owner=f.owner.toBase58(),env={ADMIN_PASSWORD:'test-only-password-not-for-deployment',LIVE_TRADING_ENABLED:'true',PERPS_TEST_MODE:'true',DATA_DIR:'/test',SOLANA_RPC_URL:'https://example.invalid',DEV_WALLET_PRIVATE_KEY:JSON.stringify([...f.wallet.secretKey])},calls=[];
+ const data=Buffer.alloc(177);discriminator('account:Position').copy(data);f.owner.toBuffer().copy(data,8);data[152]=1;data.writeBigUInt64LE(50000000n,161);
+ const rpc={getGenesisHash:async()=> '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',getAccountInfo:async()=>({owner:PERPS,data}),getSignatureStatuses:async()=>({value:[null]}),getBlockHeight:async()=>1,sendRawTransaction:async()=>{throw Error('uncertain');}};
+ const api=async()=>({count:1,dataList:[{positionPubkey:f.position.toBase58(),asset:'SOL',side:'long',leverage:'5',sizeUsd:'50000000',collateralUsd:'10000000',entryPriceUsd:'100000000',markPriceUsd:'121000000',liquidationPriceUsd:'80000000',pnlAfterFeesUsd:'10000000',pnlAfterFeesPct:'100',tpslRequests:[]}]});
+ const dependencies={rpc:()=>rpc,api,prepare:async action=>{calls.push(action);return {tx:f.tx([f.make('close',10)]),expected:{...f.expected,kind:'close',requests:[]},lastHeight:100};}};
+ const config=async()=>({...defaults,vault:owner,tokenMint:''});let service=createLivePerps({sqlite:db,env,config,dependencies});
+ try{service.journal.reserve('test-open',{kind:'open',market:'SOL'});service.journal.signed('test-open',{expected:{...f.expected,testMode:true},wire:'none',signature:'open',lastHeight:1});service.journal.update('test-open','filled','test');await service.execute({kind:'resume'});await service.advanceCycle();assert.equal(calls.length,1);assert.equal(calls[0].kind,'close');assert.equal(service.journal.active().id,'test-open-auto-close');service.close();service=createLivePerps({sqlite:db,env,config,dependencies});await service.advanceCycle();assert.equal(calls.length,1);}finally{service.close();db.close();}
 });

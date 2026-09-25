@@ -5,10 +5,11 @@ import {z} from 'zod';
 import {loadDeveloperWallet,developerWalletStatus} from '../.sites-runtime/lib/dev-wallet.mjs';
 import {rpcConnection,jupiter,parsePositions,readMainnet,MAINNET_GENESIS,JupiterSubmissionError} from '../.sites-runtime/lib/mainnet.mjs';
 import {validateConfig,MARKETS} from '../.sites-runtime/lib/engine.mjs';
-import {PERPS,USDC,associated,positionAddress,inspectPerpsTransaction,decodeRequest,discriminator} from './perps-policy.mjs';
+import {PERPS,USDC,SOL,associated,positionAddress,inspectPerpsTransaction,decodeRequest,discriminator} from './perps-policy.mjs';
 
+import {prepareProtectedClose} from './protected-close.mjs';
 import {inspectInstantTransaction} from './instant-perps.mjs';
-import {prepareBuyback,closeReceipt,buybackBudget,tokenDelta} from './buybacks.mjs';
+import {prepareBuyback,prepareUnwrap,verifyUnwrapReceipt,closeReceipt,buybackBudget,tokenDelta} from './buybacks.mjs';
 
 const fingerprint=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function base58(bytes){const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let n=0n;for(const b of bytes)n=n*256n+BigInt(b);let result='';while(n){result=alphabet[Number(n%58n)]+result;n/=58n;}for(const b of bytes){if(b!==0)break;result='1'+result;}return result;}
@@ -76,14 +77,16 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  // A preparation has no persisted signature and therefore could never be broadcast.
  // CAS in signed() fences any older process still finishing that preparation.
  sqlite.prepare("UPDATE live_orders SET status='failed',message='Preparation interrupted before signing; safe to submit a new command',updated=? WHERE status='preparing'").run(Date.now());
+ sqlite.exec("CREATE TABLE IF NOT EXISTS test_settlements(id TEXT PRIMARY KEY,state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS close_receipt_assets(request TEXT PRIMARY KEY, mint TEXT NOT NULL);");
  sqlite.exec("CREATE TABLE IF NOT EXISTS close_receipts (signature TEXT NOT NULL, request TEXT NOT NULL, cycle TEXT NOT NULL, amount TEXT NOT NULL, PRIMARY KEY(signature,request));");
  let reconciling=false,cycling=false,closed=false;
  function reasons(c){const missing=[];if(!env.ADMIN_PASSWORD||env.ADMIN_PASSWORD.length<20||env.ADMIN_PASSWORD.length>256)missing.push('Configure a valid Admin password before live execution.');if(env.LIVE_TRADING_ENABLED!=='true')missing.push('Allow live trading in Admin → Connections to permit live orders.');if(!env.DATA_DIR)missing.push('Attach a persistent volume and set DATA_DIR.');if(!env.SOLANA_RPC_URL)missing.push('Save a Solana mainnet RPC URL in Admin → Connections.');const wallet=developerWalletStatus(env.DEV_WALLET_PRIVATE_KEY,c.vault);if(wallet.status!=='configured')missing.push(wallet.message);if(!c.vault)missing.push('Save the developer wallet as the vault address.');if(env.PERPS_TEST_MODE!=='true'&&!c.tokenMint)missing.push('Save the token CA.');return missing;}
- async function status(){const c=await config();return {testMode:env.PERPS_TEST_MODE==='true',testCollateralUsd:10,testFunding:env.PERPS_TEST_FUNDING==='SOL'?'SOL':'USDC',enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
+ async function status(){const c=await config();return {testMode:env.PERPS_TEST_MODE==='true',testCollateralUsd:10,testFunding:'SOL',enabled:reasons(c).length===0,paused:journal.paused(),reasons:reasons(c),cycle:cycle(),orders:journal.list()};}
  async function verifiedConnection(){const connection=rpc();if(await connection.getGenesisHash()!==MAINNET_GENESIS)fail('Live perpetuals require a verified Solana mainnet RPC.');return connection;}
  async function prepare(action,c){
   validateConfig(c);const connection=await verifiedConnection();
-  if(action.kind==='buyback')return prepareBuyback(connection,env,c,BigInt(action.amount),dependencies.swapApi);
+  if(action.kind==='unwrap')return prepareUnwrap(connection,c.vault);
+  if(action.kind==='buyback'||action.kind==='settle'){const prepared=await prepareBuyback(connection,env,action.kind==='settle'?{...c,tokenMint:action.outputMint||SOL.toBase58()}:c,BigInt(action.amount),dependencies.swapApi,action.sourceMint?new PublicKey(action.sourceMint):action.inputToken==='SOL'?SOL:USDC);prepared.expected.kind=action.kind;return prepared;}
   if(action.kind==='claim'){
    const report=await (dependencies.report?dependencies.report(c):readMainnet(c,env));
    if(report.creator!==c.vault||report.rewardsSol===null||report.rewardsSol<=0)fail('No verified claimable fees for this developer wallet and token.');
@@ -108,8 +111,8 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   if(pending.some(p=>{const request=decodeRequest(p.account.data);return !request.executed&&(request.type===0||action.kind==='open'&&request.position===position.toBase58());}))fail('The wallet has a pending market request or leftover TP/SL for this position. Resolve it in Jupiter first.');
   const mark=Number(market.price);if(!Number.isFinite(mark)||mark<=0||!Number.isSafeInteger(Math.round(mark*1e6)))fail('Market price is unavailable.');
   const size=chainSize(onchain,owner,action.market),existing=positions.find(p=>p.address===position.toBase58());
-  const expected={kind:action.kind,market:action.market,owner,inputToken:action.inputToken||'USDC',position:position.toBase58(),mark:Math.round(mark*1e6),maxPrice:Number(BigInt(Math.round(mark*1e6))*BigInt(10000+c.slippageBps)/10000n),minPrice:Number((BigInt(Math.round(mark*1e6))*BigInt(10000-c.slippageBps)+9999n)/10000n),size:'0',collateral:'0',tp:Math.round(mark*(1+c.takeProfit/100/c.leverage)*1e6),sl:Math.round(mark*(1-c.stopLoss/100/c.leverage)*1e6)};
-  let raw;
+  const expected={kind:action.kind,market:action.market,owner,inputToken:action.inputToken||'SOL',position:position.toBase58(),mark:Math.round(mark*1e6),maxPrice:Number(BigInt(Math.round(mark*1e6))*BigInt(10000+c.slippageBps)/10000n),minPrice:Number((BigInt(Math.round(mark*1e6))*BigInt(10000-c.slippageBps)+9999n)/10000n),size:'0',collateral:'0',tp:Math.round(mark*(1+c.takeProfit/100/c.leverage)*1e6),sl:Math.round(mark*(1-c.stopLoss/100/c.leverage)*1e6)};
+  let raw,localClose;
   if(action.kind==='open'){
    if(existing||size>0n)fail('This market already has a position. Close it before opening another.');
    let amount=0n,price=1,decimals=1e6;
@@ -133,9 +136,10 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(!existing||existing.side!=='long'||size===0n)fail('No verified long position exists in this market.');
    expected.size=size.toString();
    expected.minOut=String(Math.max(1,Math.floor(Math.max(0,existing.collateralUsd+existing.pnlUsd)*(1-c.slippageBps/10000)*1e6)));
-   raw=await api('positions/decrease',{positionPubkey:position.toBase58(),receiveToken:'USDC',entirePosition:true,maxSlippageBps:String(c.slippageBps)});
+   expected.receiveMint=({BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',ETH:'7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',SOL:SOL.toBase58()}[action.market]);
+   localClose=await prepareProtectedClose(connection,expected);
   }
-  const quote=responseSchema.parse(raw);if(quote.positionPubkey!==expected.position)fail('Jupiter returned a different position.');
+  const quote=localClose?{positionPubkey:expected.position,serializedTxBase64:Buffer.from(localClose.tx.serialize()).toString('base64'),txMetadata:{blockhash:localClose.tx.message.recentBlockhash,lastValidBlockHeight:String(localClose.lastHeight)}}:responseSchema.parse(raw);if(quote.positionPubkey!==expected.position)fail('Jupiter returned a different position.');
   if(action.kind==='open'){
    const q=quote.quote,entry=Number(rawAmount.parse(q.averagePriceUsd)),liquidation=Number(rawAmount.parse(q.liquidationPriceUsd)),leverage=Number(q.leverage),notional=Number(q.sizeUsdDelta);
    if(!Number.isFinite(leverage)||leverage<1||leverage>c.leverage*1.01||notional<=0||notional>c.maxPositionUsd*1e6||entry<=0||Math.abs(entry/expected.mark-1)*10000>c.slippageBps||liquidation<=0||liquidation>=expected.sl||expected.sl>=entry||expected.tp<=entry)fail('Quote exceeds size, leverage, slippage or liquidation limits.');
@@ -184,19 +188,22 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const result=(await connection.getSignatureStatuses([row.signature],{searchTransactionHistory:true})).value[0];
    if(result?.err&&result.confirmationStatus==='finalized'){journal.update(row.id,'failed','Transaction failed on-chain; no fill was created.');return;}
    if(result?.confirmationStatus==='finalized'){
-    if(row.kind==='buyback'){
+    if(row.kind==='unwrap'){const receipt=await connection.getTransaction(row.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});if(!receipt)return;verifyUnwrapReceipt(receipt,expected);journal.update(row.id,'filled','SOL returned to the wallet; unwrap finalized.');return;}
+    if(row.kind==='buyback'||row.kind==='settle'){
      const receipt=await connection.getTransaction(row.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});
      if(!receipt)return;
-     if(tokenDelta(receipt,expected.source,USDC.toBase58(),expected.owner)!==-BigInt(expected.amount)||tokenDelta(receipt,expected.destination,expected.mint,expected.owner)<BigInt(expected.minimum)){
+     if(tokenDelta(receipt,expected.source,expected.sourceMint||USDC.toBase58(),expected.owner)!==-BigInt(expected.amount)||tokenDelta(receipt,expected.destination,expected.mint,expected.owner)<BigInt(expected.minimum)){
       journal.pause(true,'Buyback finalized but received tokens could not be verified. Inspect the original signature.');journal.update(row.id,'unknown','Buyback finalized but received tokens could not be verified. Inspect the original signature.');return;
      }
-     journal.update(row.id,'filled','Realized profit bought back into the configured token; receipt finalized.');return;
+     expected.received=String(tokenDelta(receipt,expected.destination,expected.mint,expected.owner));sqlite.prepare('UPDATE live_orders SET expected=? WHERE id=?').run(JSON.stringify(expected),row.id);
+     journal.update(row.id,'filled',row.kind==='settle'?'Close proceeds converted to SOL (wrapped); receipt finalized.':'Realized profit bought back into the configured token; receipt finalized.');return;
     }
     if(row.kind==='claim'){journal.update(row.id,'filled','Creator fee claim finalized on-chain.');return;}
     const info=await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),size=chainSize(info,expected.owner,expected.market);
     const requests=await connection.getMultipleAccountsInfo(expected.requests.map(r=>new PublicKey(r.address)),'finalized');
     if(requests.some(r=>r&&!r.owner.equals(PERPS)))fail('Unexpected request account owner.');
     const requestPending=requests.some((r,i)=>r&&!expected.requests[i].trigger&&!decodeRequest(r.data).executed);
+    if(row.kind==='close'&&!requestPending&&size>0n){journal.pause(true);journal.update(row.id,'unknown','Close request settled but the position is still open. Inspect the original request before retrying.');return;}
     if(!requestPending&&row.kind==='close'&&size===0n){journal.update(row.id,'filled','Position closed on-chain.');return;}
     if(row.kind==='open'&&!requestPending&&size===0n&&(expected.instant||requests.every(r=>!r||decodeRequest(r.data).executed))){
      journal.update(row.id,'settled','Request finalized and settled; no open position remains. This does not establish realized profit.');return;
@@ -222,10 +229,10 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
  }
  async function execute(action,id,internal=false){
   const c=await config();if(env.PERPS_TEST_MODE==='true'&&['claim','buyback'].includes(action.kind))fail('Claims and buybacks are disabled in position test mode.');
-  if(env.PERPS_TEST_MODE==='true'&&action.kind==='open')action={...action,inputToken:env.PERPS_TEST_FUNDING==='SOL'?'SOL':'USDC',budget:env.PERPS_TEST_FUNDING==='SOL'?undefined:10000000,testCollateralUsd:10};
+  if(env.PERPS_TEST_MODE==='true'&&action.kind==='open')action={...action,inputToken:'SOL',budget:undefined,testCollateralUsd:10};
   if(action.kind==='pause'){journal.pause(true);return status();}
   if(action.kind==='resume'){if(journal.active()?.status==='unknown'){await reconcile();const unresolved=journal.active();if(unresolved?.status==='unknown')fail('Cannot resume while a transaction is unresolved. '+unresolved.message+' Order: '+unresolved.id);}const missing=reasons(c);if(missing.length)fail(missing.join(' '));if(cycle().phase==='error')setCycle({...cycle(),phase:cycle().resumePhase||'watching',message:undefined,nextAt:0});journal.pause(false);return status();}
-  if(!['open','close','claim',...(internal?['buyback']:[])].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');
+  if(!['open','close','claim',...(internal?['buyback','settle','unwrap']:[])].includes(action.kind)||!MARKETS.includes(action.market))fail('Choose a supported market and action.');
   const missing=reasons(c);if(missing.length)fail(missing.join(' '));
   if(action.kind!=='close'&&journal.paused())fail('Live orders are paused. Enable them in Admin first.');
   if(action.kind==='open'&&!internal&&cycle().profit&&cycle().phase!=='idle')fail('Manual opens are disabled until the current cycle and buyback settle.');
@@ -233,12 +240,13 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    const last=sqlite.prepare("SELECT MAX(created) AS time FROM live_orders WHERE kind='open' AND status<>'failed'").get().time;
    if(last&&Date.now()-last<c.cooldownSeconds*1000)fail('Opening cooldown is still active.');
   }
+  if(action.kind==='open'&&env.PERPS_TEST_MODE==='true'&&sqlite.prepare("SELECT expected FROM live_orders WHERE kind='open' AND status='filled' AND expected IS NOT NULL").all().some(r=>{const e=JSON.parse(r.expected);return e.testMode&&e.owner===c.vault&&e.market===action.market;}))fail('Wait for the previous test position and SOL settlement in this market to finish.');
   const reserved=journal.reserve(id,action);if(reserved.duplicate){void reconcile();return status();}
   try{
    const prepared=await (dependencies.prepare||prepare)(action,c);
    if(closed||fingerprint(await config())!==fingerprint(c)||action.kind!=='close'&&journal.paused())fail('Settings or pause state changed during preparation.');
    const wallet=loadDeveloperWallet(env.DEV_WALLET_PRIVATE_KEY);if(wallet.publicKey.toBase58()!==c.vault)fail('Signing wallet differs from the vault.');
-   if(action.kind==='buyback')prepared.expected.cycle=action.cycle;
+   if(action.kind==='buyback'||action.kind==='settle')prepared.expected.cycle=action.cycle;
    if(action.kind==='open'&&env.PERPS_TEST_MODE==='true')prepared.expected.testMode=true;
    prepared.tx.sign([wallet]);
    verifyWalletSignature(prepared.tx,c.vault);
@@ -250,6 +258,21 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
   }else await reconcile();
   return status();
  }
+ async function closeAtTarget(c,positions){
+  const current=cycle(),seen=new Set();
+  for(const row of sqlite.prepare("SELECT * FROM live_orders WHERE kind='open' AND status='filled' AND expected IS NOT NULL ORDER BY created DESC").all()){
+   const e=JSON.parse(row.expected);if(e.owner!==c.vault||seen.has(e.position))continue;seen.add(e.position);
+   if(env.PERPS_TEST_MODE==='true'?!e.testMode:!current.id||!row.id.startsWith(current.id+'-'))continue;
+   const p=positions.find(p=>p.address===e.position&&p.side==='long');if(!p)continue;
+   const price=Math.round(p.mark*1e6);if(!(price>=e.tp||price<=e.sl))continue;
+   const id=row.id+'-auto-close',prior=journal.get(id);
+   if(prior?.status==='failed')fail('Automatic close was rejected. Inspect its error before retrying; existing TP/SL orders remain active.');
+   if(prior)return true;
+   if(closed||journal.paused())return true;
+   await execute({kind:'close',market:e.market},id,true);return true;
+  }
+  return false;
+ }
  async function advanceCycle(){
   if(cycling||closed||journal.paused()||journal.active())return;cycling=true;
   try{
@@ -258,8 +281,15 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
     const connection=await verifiedConnection();
     for(const row of sqlite.prepare("SELECT * FROM live_orders WHERE kind='open' AND status='filled' AND expected IS NOT NULL").all()){
      const expected=JSON.parse(row.expected);if(!expected.testMode||expected.owner!==c.vault)continue;
-     if(chainSize(await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),c.vault,expected.market)===0n)journal.update(row.id,'settled','Test position closed on-chain. Proceeds remain in the wallet; no buyback.');
+     if(chainSize(await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),c.vault,expected.market)===0n){
+      const prior=sqlite.prepare('SELECT state FROM test_settlements WHERE id=?').get(row.id);
+      const testState=prior?JSON.parse(prior.state):{id:row.id+'-settlement',openOrderIds:[row.id],phase:'watching',owner:c.vault,mint:c.tokenMint,plans:[{market:expected.market}],profit:{currency:'SOL',principal:'0',feeReserve:'0',percent:0,settled:[],sequence:0}};
+      const save=value=>sqlite.prepare('INSERT INTO test_settlements VALUES(?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state').run(row.id,JSON.stringify(value));
+      save(testState);if(await settleProfit(testState,c,save))return;
+      if(testState.profit.settled.length===1)journal.update(row.id,'settled','Test position closed; proceeds settled in SOL. No buyback.');
+     }
     }
+    if(!journal.active()&&sqlite.prepare("SELECT 1 FROM live_orders WHERE kind='open' AND status='filled' LIMIT 1").get())await closeAtTarget(c,parsePositions(await api('positions?walletAddress='+encodeURIComponent(c.vault))));
     return; // Test mode never claims, buys back, or automatically opens another position.
    }
 
@@ -283,6 +313,7 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
     await execute({kind:'open',...plan},id,true);return;
    }
    const positions=parsePositions(await api('positions?walletAddress='+encodeURIComponent(c.vault)));
+   if(await closeAtTarget(c,positions))return;
    if(positions.length)return;
    const connection=await verifiedConnection(),accounts=await connection.getMultipleAccountsInfo(MARKETS.map(m=>positionAddress(c.vault,m)),'finalized');
    if(closed||journal.paused()||fingerprint(await config())!==fingerprint(c))return;
@@ -293,38 +324,39 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    if(closed||journal.paused()||fingerprint(await config())!==fingerprint(c))return;
    if(report.creator!==c.vault||report.rewardsSol===null){journal.pause(true);setCycle({...state,phase:'error',message:'The saved developer wallet must be the token’s verified on-chain fee creator.'});return;}
    if(report.walletSol===null||report.usdc===null||!report.prices.SOL)return;
-   const solAvailable=Math.max(0,report.walletSol-0.15),capital=report.usdc+solAvailable*report.prices.SOL+report.rewardsSol*report.prices.SOL;
+   const solAvailable=Math.max(0,Math.round((report.walletSol-0.15)*1e9))/1e9,capital=solAvailable*report.prices.SOL+report.rewardsSol*report.prices.SOL;
    if(capital<c.minRewardUsd)return;
    if(state.phase!=='funding'&&report.rewardsSol>0.00001){setCycle({phase:'claiming',id:randomUUID(),nextAt:0});return;}
    // Budget a cycle once. Later markets must not re-allocate an ever-shrinking balance.
-   const inputToken=report.usdc>=c.minRewardUsd?'USDC':'SOL',price=inputToken==='SOL'?report.prices.SOL:1,decimals=inputToken==='SOL'?1e9:1e6,available=inputToken==='SOL'?solAvailable*price:report.usdc;
+   const inputToken='SOL',price=report.prices.SOL,decimals=1e9,available=solAvailable*price;
    if(available<c.minRewardUsd)return;
    const plans=MARKETS.filter(m=>c.allocation[m]>0).map(m=>({market:m,inputToken,budget:Math.floor(Math.min(available*c.allocation[m]/100,c.maxPositionUsd/c.leverage)/price*decimals)}));
    if(!plans.length||plans.some(p=>p.budget/decimals*price<10)){journal.pause(true);setCycle({...state,phase:'error',message:'Each enabled market needs at least $10 collateral. Add funds or adjust the strategy.'});return;}
-   const principal=Math.ceil(plans.reduce((sum,p)=>sum+p.budget/decimals*price*1e6,0));
+   const principal=plans.reduce((sum,p)=>sum+p.budget,0);
    // Reserve all cycle collateral, including still-open legs, plus capped open/close and buyback SOL costs.
-   const feeReserve=Math.ceil((plans.length*0.08+0.01)*report.prices.SOL*1e6);
-   setCycle({phase:'opening',id:state.id||randomUUID(),owner:c.vault,mint:c.tokenMint,plans,index:0,nextAt:0,profit:{principal:String(principal),feeReserve:String(feeReserve),percent:c.buybackPercent,settled:[],sequence:0}});
+   const feeReserve=Math.ceil((plans.length*0.08+0.01)*1e9);
+   setCycle({phase:'opening',id:state.id||randomUUID(),owner:c.vault,mint:c.tokenMint,plans,index:0,nextAt:0,profit:{currency:'SOL',principal:String(principal),feeReserve:String(feeReserve),percent:c.buybackPercent,settled:[],sequence:0}});
   }catch(e){if(!closed){if(e?.safe){journal.pause(true);setCycle({...cycle(),resumePhase:cycle().phase,phase:'error',message:e.message});}else setCycle({...cycle(),message:'Connection checks are unavailable. The cycle will retry without creating a replacement order.'});}}finally{cycling=false;}
  }
- async function settleProfit(state,c){
+ async function settleProfit(state,c,saveState=setCycle){
   const connection=await verifiedConnection(),profit=state.profit;
   // An existing buyback must settle before another amount can be reserved.
   if(profit.order){
    const previous=journal.get(profit.order);
-   if(previous?.status==='failed'){journal.pause(true);setCycle({...state,phase:'error',resumePhase:'watching',message:'Buyback failed; profit remains reserved. Resume retries only a definitively failed transaction.'});profit.order=null;setCycle({...cycle(),profit});return true;}
+   if(previous?.status==='failed'){journal.pause(true);saveState({...state,phase:'error',resumePhase:'watching',message:'Buyback failed; profit remains reserved. Resume retries only a definitively failed transaction.'});profit.order=null;saveState({...cycle(),profit});return true;}
    if(previous&&previous.status!=='filled')return true;
    profit.order=null;if(previous)profit.sequence++;
   }
   for(let index=0;index<state.plans.length;index++){
    if(profit.settled.includes(index))continue;
-   const open=journal.get(state.id+'-'+index);if(!open?.expected)continue;
+   const open=journal.get(state.openOrderIds?.[index]||state.id+'-'+index);if(!open?.expected)continue;
    const expected=JSON.parse(open.expected);
    if(chainSize(await connection.getAccountInfo(new PublicKey(expected.position),'finalized'),c.vault,expected.market)>0n)continue;
-   const requests=expected.requests.filter(r=>r.trigger).map(r=>r.address);
+   const requestMints=new Map(expected.requests.filter(r=>r.trigger).map(r=>[r.address,r.mint||USDC.toBase58()]));
+   const requests=[...requestMints.keys()];
    // Include protective manual closes issued by this app for the same cycle position.
    for(const close of sqlite.prepare("SELECT expected FROM live_orders WHERE kind='close' AND created>=? AND expected IS NOT NULL").all(open.created)){
-    const e=JSON.parse(close.expected);if(e.owner===c.vault&&e.position===expected.position)requests.push(...e.requests.map(r=>r.address));
+    const e=JSON.parse(close.expected);if(e.owner===c.vault&&e.position===expected.position){requests.push(...e.requests.map(r=>r.address));for(const r of e.requests)requestMints.set(r.address,r.mint||e.receiveMint||USDC.toBase58());}
    }
    let found=false;
    for(const close of sqlite.prepare("SELECT * FROM live_orders WHERE kind='close' AND status='filled' AND created>=? AND expected IS NOT NULL").all(open.created)){
@@ -343,8 +375,9 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
       const tx=await connection.getTransaction(signature.signature,{commitment:'finalized',maxSupportedTransactionVersion:0});
       if(!tx)throw Error('Historical receipt unavailable');
       if(sqlite.prepare("SELECT 1 FROM close_receipts WHERE signature=? AND request LIKE 'instant-%'").get(signature.signature)){found=true;continue;}
-      const amount=closeReceipt(tx,c.vault,request);
-      if(amount>0n){sqlite.prepare('INSERT OR IGNORE INTO close_receipts VALUES(?,?,?,?)').run(signature.signature,request,state.id,String(amount));found=true;}
+      const payoutMint=requestMints.get(request)||USDC.toBase58();
+      const amount=closeReceipt(tx,c.vault,request,new PublicKey(payoutMint));
+      if(amount>0n){sqlite.prepare('INSERT OR IGNORE INTO close_receipt_assets VALUES(?,?)').run(request,payoutMint);sqlite.prepare('INSERT OR IGNORE INTO close_receipts VALUES(?,?,?,?)').run(signature.signature,request,state.id,String(amount));found=true;}
      }
      if(signatures.length<100){complete=true;break;}before=signatures.at(-1).signature;
     }
@@ -352,18 +385,42 @@ export function createLivePerps({sqlite,env,config,dependencies={}}){
    }
    if(found)profit.settled.push(index);
   }
-  const received=sqlite.prepare('SELECT amount FROM close_receipts WHERE cycle=?').all(state.id).reduce((sum,r)=>sum+BigInt(r.amount),0n);
+  const outputMint=profit.currency==='SOL'?SOL.toBase58():USDC.toBase58();
+  const receipts=sqlite.prepare('SELECT r.amount, a.mint FROM close_receipts r LEFT JOIN close_receipt_assets a ON a.request=r.request WHERE r.cycle=?').all(state.id);
+  const byMint=new Map();for(const r of receipts){const mint=r.mint||USDC.toBase58();byMint.set(mint,(byMint.get(mint)||0n)+BigInt(r.amount));}
+  const conversions=sqlite.prepare("SELECT * FROM live_orders WHERE kind='settle'").all().filter(r=>r.id.startsWith(state.id+'-settle-'));
+  const unseenFailure=conversions.find(r=>r.status==='failed'&&!(profit.failedSettlements||[]).includes(r.id));
+  if(unseenFailure){profit.failedSettlements=[...(profit.failedSettlements||[]),unseenFailure.id];saveState({...state,profit});fail('SOL settlement failed. Funds remain reserved. Review the error and resume to retry only this definitively failed conversion.');}
+  for(const [mint,total] of byMint){
+   if(mint===outputMint)continue;
+   const matching=conversions.filter(r=>JSON.parse(r.expected||'{}').sourceMint===mint);
+   const reserved=matching.filter(r=>r.status!=='failed').reduce((n,r)=>n+BigInt(JSON.parse(r.expected).amount),0n);
+   if(total>reserved){
+    await execute({kind:'settle',market:'SOL',amount:String(total-reserved),sourceMint:mint,outputMint,cycle:state.id},state.id+'-settle-'+conversions.length,true);return true;
+   }
+  }
+  if(conversions.some(r=>!['filled','failed'].includes(r.status)))return true;
+  const received=(byMint.get(outputMint)||0n)+conversions.filter(r=>r.status==='filled').reduce((n,r)=>n+BigInt(JSON.parse(r.expected).received||'0'),0n);
   const spent=sqlite.prepare("SELECT expected FROM live_orders WHERE kind='buyback' AND status<>'failed' AND expected IS NOT NULL").all().reduce((sum,r)=>{const e=JSON.parse(r.expected);return sum+(e.cycle===state.id?BigInt(e.amount):0n);},0n);
   const amount=buybackBudget(received,profit.principal,profit.feeReserve,profit.percent,spent);
-  profit.received=String(received);profit.spent=String(spent);setCycle({...state,profit,message:undefined});
+  profit.received=String(received);profit.spent=String(spent);saveState({...state,profit,message:undefined});
   // Avoid dust orders; retained dust can be used as collateral in the next cycle.
-  if(amount<1000000n)return false;
+  if(amount<1000000n){
+   if(profit.currency==='SOL'&&profit.settled.length===state.plans.length){
+    const id=state.id+'-unwrap-'+(profit.unwrapAttempt||0),prior=journal.get(id);
+    if(prior?.status==='failed'){profit.unwrapAttempt=(profit.unwrapAttempt||0)+1;saveState({...state,profit});fail('SOL unwrap failed. Wrapped SOL remains in the wallet. Review the error and resume to retry.');}
+    if(prior)return prior.status!=='filled';
+    const account=await connection.getAccountInfo(associated(c.vault,SOL));
+    if(account?.data.length===165&&account.data.readBigUInt64LE(64)>0n){await execute({kind:'unwrap',market:'SOL'},id,true);return true;}
+   }
+   return false;
+  }
   if(closed||journal.paused()||fingerprint(await config())!==fingerprint(c))return true;
   const id=state.id+'-buyback-'+profit.sequence;
   // A preparation failure has no signature; a failed chain transaction is finalized. Only these allow a new ID.
-  if(journal.get(id)?.status==='failed'){profit.sequence++;setCycle({...state,profit});return true;}
-  profit.order=id;setCycle({...state,profit,message:'Buying back verified realized profit.'});
-  await execute({kind:'buyback',market:'SOL',amount:String(amount),cycle:state.id},id,true);return true;
+  if(journal.get(id)?.status==='failed'){profit.sequence++;saveState({...state,profit});return true;}
+  profit.order=id;saveState({...state,profit,message:'Buying back verified realized profit.'});
+  await execute({kind:'buyback',market:'SOL',amount:String(amount),cycle:state.id,inputToken:profit.currency==='SOL'?'SOL':'USDC'},id,true);return true;
  }
  const timer=setInterval(()=>void reconcile().then(()=>advanceCycle()),10000);timer.unref();
  return {status,execute,reconcile,advanceCycle,journal,hasUnsettledCycle(){return !!cycle().profit&&cycle().phase!=='idle'||sqlite.prepare("SELECT expected FROM live_orders WHERE kind='open' AND status='filled' AND expected IS NOT NULL").all().some(r=>JSON.parse(r.expected).testMode);},resetCycle(){if(cycle().profit&&cycle().phase!=='idle')fail('Finish the current cycle and buyback before changing setup.');setCycle({phase:'idle',nextAt:0});},close(){closed=true;clearInterval(timer);},safeError};

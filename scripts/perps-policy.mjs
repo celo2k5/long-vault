@@ -45,7 +45,10 @@ export function inspectPerpsTransaction(tx,lookups,expected){
   const modern=name==='create_decrease_position_request2',isOpen=name==='create_increase_position_market_request';
   invariant(ix.keys.length===(modern?18:16),'unknown account layout');
   const a=i=>ix.keys[i].pubkey;
-  const mint=isOpen?inputMint:USDC;
+  const mint=isOpen?inputMint:new PublicKey(expected.receiveMint||USDC);
+  const nativeClose=expected.kind==='close'&&mint.toBase58()===({BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh',ETH:'7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',SOL:SOL.toBase58()}[expected.market]);
+  invariant(isOpen||mint.equals(USDC)||nativeClose,'unapproved payout mint');
+  atas.set(associated(owner,mint).toBase58(),owner.toBase58()+':'+mint.toBase58());
   invariant(a(0).equals(owner)&&a(1).equals(associated(owner,mint))&&a(2).equals(pda([Buffer.from('perpetuals')]))&&a(3).equals(POOL)&&a(4).equals(position),'wallet, destination or pool mismatch');
   invariant(a(7).toBase58()===CUSTODY[expected.market]&&a(modern?10:8).equals(a(7))&&a(modern?11:9).equals(mint),'incorrect custody or collateral mint');
   const tail=modern?12:10;
@@ -70,14 +73,14 @@ export function inspectPerpsTransaction(tx,lookups,expected){
    }else{
     const slippage=r.u64(),minimum=r.option(r.u64);entire=r.option(r.bool);counter=r.u64();
     invariant(expected.kind==='close'&&slippage>=BigInt(expected.minPrice)&&slippage<=BigInt(expected.mark),'closing slippage exceeds limit');
-    invariant(minimum!==null&&minimum>=BigInt(expected.minOut)&&minimum>0n,'close swap minimum output exceeds allowed loss');closes++;
+    invariant(nativeClose?minimum===null:minimum!==null&&minimum>=BigInt(expected.minOut)&&minimum>0n,'close swap minimum output exceeds allowed loss');closes++;
    }
    invariant(entire===true&&(size===0n||size===BigInt(expected.size)),'partial close is not authorized');
   }
   r.end();const counterBytes=Buffer.alloc(8);counterBytes.writeBigUInt64LE(counter);
   const request=pda([Buffer.from('position_request'),position.toBuffer(),counterBytes,Buffer.from([isOpen?1:2])]);
   invariant(a(5).equals(request)&&a(6).equals(associated(request,mint)),'request or escrow destination mismatch');
-  requests.push({address:request.toBase58(),trigger:modern});atas.set(associated(request,mint).toBase58(),request.toBase58()+':'+mint.toBase58());
+  requests.push({address:request.toBase58(),trigger:modern&&expected.kind==='open',mint:mint.toBase58()});atas.set(associated(request,mint).toBase58(),request.toBase58()+':'+mint.toBase58());
  }
  invariant(expected.kind==='open'?increases===1&&tp===1&&sl===1&&closes===0:closes===1&&increases===0&&tp===0&&sl===0,'missing or duplicate order / TP / SL');
  invariant(new Set(requests.map(r=>r.address)).size===requests.length,'duplicate request address');
