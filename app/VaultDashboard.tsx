@@ -1,6 +1,7 @@
 "use client";
 import {useEffect,useState,useCallback,useRef} from 'react';
 import {Copy} from 'lucide-react';
+import {HoloCandle} from './HoloCandle';
 import {Toaster,toast} from 'sonner';
 import {MainnetOverview} from './Connections';
 import {AdminConsole} from './AdminConsole';
@@ -20,7 +21,8 @@ export default function VaultDashboard({view='overview'}:{view?:'overview'|'admi
  async function save(){if(busy)return;setBusy(true);try{const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tokenMint:ca.trim(),cycleSeconds:cycle,...(key?{privateKey:key.trim()}:{})})});const result=await r.json() as {error?:string};if(!r.ok)throw Error(result.error||'Setup failed');setKey('');await refresh();toast.success('Saved. Cycles are paused until you enable them.');}catch(e){toast.error(e instanceof Error?e.message:'Save could not be confirmed. Check the current wallet before retrying.');}finally{setBusy(false);}}
  const config=data?.config||{...defaults,dataSource:'mainnet' as const};
  return <><header className="topbar"><a className="wordmark" href="/">LONG<span> / VAULT</span></a>{admin&&<a className="admin-link" href="/">← Back to $LONG</a>}</header><main className={admin?'admin-page':'dashboard'}>
- {admin?<div className="admin-heading"><form method="post" action="/admin/logout"><button className="text-button">Sign out</button></form><span className="eyebrow">LONG CONTROL</span><h1>Admin</h1><p>One token. One developer wallet. One cycle.</p></div>:<div className="hero"><div className="token-emblem"><img src="/long-pfp.png" alt="$LONG profile icon" width={1254} height={1254}/></div><h1>$LONG</h1><p>BTC, ETH &amp; SOL. One wallet.<br/><span>Creator rewards. Long positions. $LONG.</span></p><div className="address"><label>TOKEN CA</label><span>{config.tokenMint||'Not configured'}</span>{config.tokenMint&&<button aria-label="Copy token contract address" onClick={()=>copy(config.tokenMint)}><Copy size={12}/></button>}</div></div>}
+ {admin?<div className="admin-heading"><form method="post" action="/admin/logout"><button className="text-button">Sign out</button></form><span className="eyebrow">LONG CONTROL</span><h1>Admin</h1><p>One token. One developer wallet. One cycle.</p></div>:<section className="hero holo-hero"><div className="holo-copy"><span className="eyebrow">THE $LONG PROTOCOL</span><h1>$LONG<span className="hero-dot">.</span></h1><p>Fees fuel the longs.<br/><span>Profits feed the chart.</span></p><div className="address"><label>TOKEN CA</label><span>{config.tokenMint||'Not configured'}</span>{config.tokenMint&&<button aria-label="Copy token contract address" onClick={()=>copy(config.tokenMint)}><Copy size={14}/></button>}</div></div><HoloCandle/></section>}
+ {!admin&&<section className="tek-flow" aria-label="How the automation works"><div><span>01 / COLLECT</span><p>Creator rewards</p></div><b aria-hidden="true">→</b><div><span>02 / DEPLOY</span><p>BTC · ETH · SOL longs</p></div><b aria-hidden="true">→</b><div><span>03 / RETURN</span><p>Realized profit → $LONG</p></div></section>}
  {error&&<p role="alert" className="error-box">{error} {admin&&<a href="/admin/login">Sign in</a>}</p>}
  {!admin&&<MainnetOverview config={config} copy={copy} trading={data?.trading}/>}
  {admin&&<div className="admin-content"><form onSubmit={e=>{e.preventDefault();void save();}}><section className="panel settings-section"><h2>Setup</h2><div className="field-grid">

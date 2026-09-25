@@ -121,3 +121,7 @@ The reconciler retires an old order only when its signature verifies against the
 ### Close-request cleanup
 
 Instant closes may include `closePositionRequest2` or `closePositionRequest3` instructions. A writable keeper is accepted only for this close-cleanup path; the API keeper remains read-only. Existing cleanup requests must be verified on-chain as this wallet's long TP/SL requests, with matching pool, custody and derived request address. USDC refunds and request escrow addresses are checked. A request created earlier in the same validated close may also be cleaned up. Duplicate cleanup and unrelated keeper uses are rejected. This path has instruction-policy regression coverage; no funded close was submitted during development.
+
+### Holographic candle hero
+
+The public dashboard uses a procedural green candlestick in place of the supplied hand model, with the supplied barycentric wireframe, scan reveal, simplex-noise dots, pointer lag and bloom shaders. Three.js is pinned to 0.160.0 and bundled locally so the existing production content-security policy stays intact. The hero is lazy-loaded only on the public page; live panels and admin controls remain connected to their existing data sources. The animation pauses off-screen and when the tab is hidden, respects reduced motion, and provides a static candle fallback when WebGL is unavailable. No external model or CDN request is required.
