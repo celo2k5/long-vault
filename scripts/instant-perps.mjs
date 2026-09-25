@@ -10,6 +10,17 @@ const MINTS={SOL:SOL.toBase58(),BTC:'3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJ
 const check=(ok,message)=>{if(!ok)throw Error('Transaction rejected: '+message);};
 const big=n=>BigInt(n.toString());
 const CLEANUP=['closePositionRequest2','closePositionRequest3'];
+export function checkInstantInstructions(decoded,kind){
+ const allowed=kind==='open'?['setTokenLedger','instantIncreasePositionPreSwap','instantIncreasePosition','instantCreateTpsl']:['instantDecreasePosition','instantDecreasePosition2',...CLEANUP];
+ const conversion=kind==='close'&&decoded.find(x=>x.name==='swapWithTokenLedger');
+ if(conversion){
+  const minimum=conversion.p?.minAmountOut;
+  check(false,'Jupiter returned a collateral-to-USDC close route (swapWithTokenLedger) that this adapter does not support.'+(minimum!==undefined&&big(minimum)===0n?' Its swap minimum output is zero, so it does not enforce your conversion-loss limit.':' This route requires separate destination, ledger, oracle and output-limit validation.')+' No wallet signature or transaction was sent. Changing wallet funding or increasing slippage will not fix this route. Manage the existing position in Jupiter while this route remains unsupported.');
+ }
+ const unsupported=[...new Set(decoded.filter(x=>!allowed.includes(x.name)).map(x=>x.name))];
+ check(!unsupported.length,'unsupported instant instruction for '+kind+': '+unsupported.join(', ')+'. No wallet signature or transaction was sent.');
+}
+
 export function checkKeeperPermissions(tx,decoded,kind,apiIndex,keeperIndex,keeper){
  check(!tx.message.isAccountWritable(apiIndex),'API keeper must be read-only');
  if(tx.message.isAccountWritable(keeperIndex))check(kind==='close'&&decoded.some(x=>CLEANUP.includes(x.name)&&x.a.keeper===keeper),'writable keeper requires validated close-request cleanup');
@@ -43,8 +54,7 @@ export async function inspectInstantTransaction(tx,tables,e,connection){
   const def=idl.instructions.find(i=>i.name===decoded.name);check(def.accounts.length===ix.keys.length,'unknown instant account layout');
   return {ix,name:decoded.name,p:decoded.data.params,a:Object.fromEntries(def.accounts.map((a,i)=>[a.name,ix.keys[i].pubkey.toBase58()]))};
  });
- const allowed=e.kind==='open'?['setTokenLedger','instantIncreasePositionPreSwap','instantIncreasePosition','instantCreateTpsl']:['instantDecreasePosition','instantDecreasePosition2',...CLEANUP];
- check(decoded.every(x=>allowed.includes(x.name)),'unsupported instant instruction');
+ checkInstantInstructions(decoded,e.kind);
  checkKeeperPermissions(tx,decoded,e.kind,apiIndex,signers.indexOf(keeper),keeper);
  const cleanupRequests=new Set();
  const custodyKeys=[...new Set(decoded.flatMap(x=>Object.entries(x.a).filter(([n])=>/^(custody|collateralCustody|receivingCustody|dispensingCustody)$/.test(n)).map(([,v])=>v)))];

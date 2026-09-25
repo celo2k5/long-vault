@@ -312,3 +312,14 @@ test('close cleanup verifies request ownership, PDA and refund destination',asyn
  await assert.rejects(inspectCloseCleanup(a,f.expected,{getAccountInfo:async()=>null}),/unavailable/);
  const other=Keypair.generate().publicKey;await assert.rejects(inspectCloseCleanup({...a,positionRequest:other.toBase58(),positionRequestAta:associated(other).toBase58()},f.expected,rpc),/PDA mismatch/);
 });
+
+
+test('collateral-conversion closes fail with actionable diagnostics without permitting zero-output swaps',async()=>{
+ const {checkInstantInstructions}=await import('../scripts/instant-perps.mjs');
+ const route=[{name:'setTokenLedger'},{name:'instantDecreasePosition'},{name:'swapWithTokenLedger',p:{minAmountOut:0n}}];
+ assert.throws(()=>checkInstantInstructions(route,'close'),/swap minimum output is zero.*No wallet signature or transaction was sent/);
+ assert.throws(()=>checkInstantInstructions([...route.slice(0,2),{name:'swapWithTokenLedger',p:{minAmountOut:100n}}],'close'),/separate destination, ledger, oracle and output-limit validation/);
+ assert.throws(()=>checkInstantInstructions([{name:'instantIncreasePosition'}],'close'),/unsupported instant instruction for close: instantIncreasePosition/);
+ assert.throws(()=>checkInstantInstructions(route,'open'),/unsupported instant instruction for open/);
+ assert.doesNotThrow(()=>checkInstantInstructions([{name:'instantDecreasePosition'},{name:'closePositionRequest2'}],'close'));
+});

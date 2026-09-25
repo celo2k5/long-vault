@@ -125,3 +125,8 @@ Instant closes may include `closePositionRequest2` or `closePositionRequest3` in
 ### Holographic candle hero
 
 The public dashboard uses a procedural green candlestick in place of the supplied hand model, with the supplied barycentric wireframe, scan reveal, simplex-noise dots, pointer lag and bloom shaders. Three.js is pinned to 0.160.0 and bundled locally so the existing production content-security policy stays intact. The hero is lazy-loaded only on the public page; live panels and admin controls remain connected to their existing data sources. The animation pauses off-screen and when the tab is hidden, respects reduced motion, and provides a static candle fallback when WebGL is unavailable. No external model or CDN request is required.
+
+
+### Unsupported collateral-conversion closes
+
+A BTC close quote inspected on September 25, 2026 returned `setTokenLedger → instantDecreasePosition → swapWithTokenLedger`, plus Doves oracle updates. The close pays market collateral into the owner's account before converting it to USDC. The observed swap specified `minAmountOut = 0`. This route remains blocked before wallet signing: do not broaden the instruction allowlist or treat a successful simulation as an execution-time minimum-output guarantee. Supporting it requires validated oracle updates, exact account/ledger bindings and ordering, and a nonzero on-chain conversion bound within the configured policy. The new diagnostic identifies this limitation explicitly. Existing positions can be inspected and managed through Jupiter; changing funding or widening slippage does not add adapter support.
